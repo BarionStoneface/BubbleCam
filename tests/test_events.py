@@ -29,3 +29,11 @@ def test_shuffling_pleco_counts():
 def test_end_waits_for_quiet():
     changes = run(Hysteresis(1, 5), [1] * 30 + [0] * 49 + [1] * 10 + [0] * 100)
     assert [c for c, _ in changes] == ["start", "end"]
+
+
+def test_long_stretch_is_split():
+    # Fanning all night: on continuously for 25 minutes at 1 fps becomes several moments of at most 10.
+    tr = Hysteresis(3, 5, max_s=600)
+    changes = run(tr, [1] * 1500, fps=1)
+    starts = [t for c, t in changes if c == "start"]
+    assert len(starts) == 3

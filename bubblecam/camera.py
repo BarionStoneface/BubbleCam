@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import subprocess
 import time
 from typing import Iterator
@@ -119,6 +120,8 @@ class SyntheticTank:
         # Pleco schedule (seconds within a repeating cycle): out from 40 s to 70 s.
         self.cycle = 120.0
         self.out_from, self.out_to = 40.0, 70.0
+        # Feeding: (start, end) times in seconds; the school rushes to the surface and goes wild.
+        self.feeds: list[tuple[float, float]] = []
 
     def frame(self, t: float) -> np.ndarray:
         img = self.bg.copy()
@@ -129,7 +132,13 @@ class SyntheticTank:
             by = int((h - ((t * 120 + i * 97) % h)))
             cv2.circle(img, (bx + int(6 * math.sin(t * 3 + i)), by), 5, 200, -1)
         # School of small fast fish, mostly in the upper water column.
-        for phase, speed in self.school:
+        feeding = any(a <= t < b for a, b in self.feeds)
+        for k, (phase, speed) in enumerate(self.school * (4 if feeding else 1)):
+            if feeding:
+                x = int(w * (0.5 + 0.45 * math.sin(t * 3.1 * speed + phase + k)))
+                y = int(h * (0.08 + 0.06 * math.sin(t * 4.3 * speed + phase * 2 + k)))
+                cv2.ellipse(img, (x, y), (22, 8), 0, 0, 360, 170, -1)
+                continue
             x = int(w * (0.5 + 0.4 * math.sin(t * 0.7 * speed + phase)))
             y = int(h * (0.3 + 0.1 * math.sin(t * 1.3 * speed + phase * 2)))
             cv2.ellipse(img, (x, y), (14, 5), 0, 0, 360, 170, -1)
@@ -149,14 +158,37 @@ class SyntheticTank:
 
 
 def _synthetic_frames(cfg: CameraConfig) -> Iterator[tuple[np.ndarray, float]]:
-    tank = SyntheticTank(cfg.width, cfg.height)
+    """For trying things without hardware. If BUBBLECAM_SYNTH_CTRL names a file containing
+    "seed dx dy [feed]", the fake camera switches tank (seed), shifts by dx, dy pixels, and with
+    "feed" puts on a feeding rush: handy for testing tank recognition and feeding detection."""
+    tanks: dict[int, SyntheticTank] = {}
+    ctrl = os.environ.get("BUBBLECAM_SYNTH_CTRL")
+    seed, dx, dy = 1, 0, 0
     period = 1.0 / cfg.fps
     start = time.time()
     next_t = start
+    last_ctrl = 0.0
     while True:
         next_t += period
         delay = next_t - time.time()
         if delay > 0:
             time.sleep(delay)
         now = time.time()
-        yield tank.frame(now - start), now
+        if ctrl and now - last_ctrl > 1:
+            last_ctrl = now
+            try:
+                parts = open(ctrl).read().split()
+                seed, dx, dy = int(parts[0]), int(parts[1]), int(parts[2])
+                feed = "feed" in parts
+            except (OSError, ValueError, IndexError):
+                feed = False
+            tank = tanks.setdefault(seed, SyntheticTank(cfg.width, cfg.height, seed=seed))
+            t = now - start
+            if feed and not any(a <= t < b for a, b in tank.feeds):
+                tank.feeds.append((t, t + 25))
+        tank = tanks.setdefault(seed, SyntheticTank(cfg.width, cfg.height, seed=seed))
+        frame = tank.frame(now - start)
+        if dx or dy:
+            M = np.float32([[1, 0, dx], [0, 1, dy]])
+            frame = cv2.warpAffine(frame, M, (frame.shape[1], frame.shape[0]), borderMode=cv2.BORDER_REFLECT)
+        yield frame, now

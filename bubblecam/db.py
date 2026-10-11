@@ -1,13 +1,43 @@
-"""SQLite index of recordings, events, per minute activity and timelapse renders."""
+"""SQLite store: tanks and spotlights, recordings, events, activity, and housekeeping logs."""
 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
+log = logging.getLogger(__name__)
+
+VERSION = 2
+
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS tanks (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_ts REAL NOT NULL,
+    settings TEXT NOT NULL DEFAULT '{}'      -- ignore areas, sensitivity, feeding detection...
+);
+
+-- Animals the app pays extra attention to. Areas are in the tank's reference picture coordinates.
+CREATE TABLE IF NOT EXISTS spotlights (
+    id INTEGER PRIMARY KEY,
+    tank_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    slot INTEGER NOT NULL,                   -- 0..3: column in the per frame recording sidecar
+    areas TEXT NOT NULL DEFAULT '[]',        -- where it hangs out
+    home TEXT,                               -- cave mouth or perch, for in/out
+    created_ts REAL NOT NULL
+);
+
+-- Which tank the camera was looking at, from this time on (NULL tank = didn't recognise the view).
+CREATE TABLE IF NOT EXISTS views (
+    ts REAL PRIMARY KEY,
+    tank_id INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS segments (
     id INTEGER PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,
@@ -20,36 +50,69 @@ CREATE INDEX IF NOT EXISTS segments_start ON segments(start_ts);
 
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL,          -- 'zone' or 'burst'
-    zone TEXT,
+    tank_id INTEGER,
+    kind TEXT NOT NULL,          -- 'spot', 'burst', 'feeding'
+    spot_id INTEGER,
     start_ts REAL NOT NULL,
     end_ts REAL,                 -- NULL while still happening
     peak REAL DEFAULT 0,
     peak_ts REAL,
+    thumb TEXT,
+    clip TEXT,                   -- own clip file, cut once the event ends
     starred INTEGER DEFAULT 0,
-    thumb TEXT
+    wrong INTEGER DEFAULT 0      -- marked "this was wrong"
 );
-CREATE INDEX IF NOT EXISTS events_start ON events(start_ts);
+CREATE INDEX IF NOT EXISTS events_tank_start ON events(tank_id, start_ts);
+
+CREATE TABLE IF NOT EXISTS event_tags (
+    event_id INTEGER NOT NULL,
+    tag TEXT NOT NULL,
+    PRIMARY KEY (event_id, tag)
+);
 
 CREATE TABLE IF NOT EXISTS activity (
-    minute_ts INTEGER PRIMARY KEY,
-    zone_max REAL, zone_mean REAL,
-    tank_max REAL, tank_mean REAL,
-    zone_moving_s REAL            -- seconds in this minute the watch zones were above threshold
+    tank_id INTEGER NOT NULL,
+    minute_ts INTEGER NOT NULL,
+    tank_mean REAL, tank_max REAL,
+    maintenance INTEGER DEFAULT 0,
+    PRIMARY KEY (tank_id, minute_ts)
+);
+
+CREATE TABLE IF NOT EXISTS spot_activity (
+    spot_id INTEGER NOT NULL,
+    minute_ts INTEGER NOT NULL,
+    tank_id INTEGER NOT NULL,
+    moving_s REAL,               -- seconds this minute it was moving
+    max REAL,
+    PRIMARY KEY (spot_id, minute_ts)
 );
 
 CREATE TABLE IF NOT EXISTS presence (
-    ts REAL PRIMARY KEY,
-    state TEXT NOT NULL           -- 'home' or 'away'
+    spot_id INTEGER NOT NULL,
+    ts REAL NOT NULL,
+    tank_id INTEGER NOT NULL,
+    state TEXT NOT NULL,         -- 'home' or 'away'
+    PRIMARY KEY (spot_id, ts)
 );
 
 CREATE TABLE IF NOT EXISTS feedings (
     id INTEGER PRIMARY KEY,
-    ts REAL NOT NULL
+    tank_id INTEGER,
+    ts REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'button',   -- 'button' or 'auto'
+    event_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS maintenance (
+    id INTEGER PRIMARY KEY,
+    tank_id INTEGER,
+    start_ts REAL NOT NULL,
+    end_ts REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS timelapses (
     id INTEGER PRIMARY KEY,
+    tank_id INTEGER,
     path TEXT,
     created_ts REAL NOT NULL,
     start_ts REAL NOT NULL,
@@ -57,7 +120,18 @@ CREATE TABLE IF NOT EXISTS timelapses (
     params TEXT,
     status TEXT NOT NULL,         -- 'queued', 'rendering', 'done', 'failed'
     progress REAL DEFAULT 0,
-    error TEXT
+    error TEXT,
+    starred INTEGER DEFAULT 0,
+    auto INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS health_log (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    message TEXT NOT NULL,
+    severity TEXT NOT NULL,       -- 'problem' or 'note'
+    start_ts REAL NOT NULL,
+    end_ts REAL
 );
 """
 
@@ -65,12 +139,30 @@ CREATE TABLE IF NOT EXISTS timelapses (
 class DB:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
+        self._retire_old(path)
         self._conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._lock = threading.Lock()
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._conn.execute(f"PRAGMA user_version={VERSION}")
+
+    @staticmethod
+    def _retire_old(path: Path) -> None:
+        """A database from an older layout is set aside (not deleted) and a fresh one started."""
+        if not path.exists():
+            return
+        conn = sqlite3.connect(str(path))
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        has_tables = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+        conn.close()
+        if has_tables and version < VERSION:
+            old = path.with_name(f"{path.stem}.v{version}.{int(time.time())}{path.suffix}")
+            path.rename(old)
+            for suffix in ("-wal", "-shm"):
+                Path(str(path) + suffix).unlink(missing_ok=True)
+            log.warning("older database moved to %s", old)
 
     def execute(self, sql: str, args: tuple = ()) -> sqlite3.Cursor:
         with self._lock:
@@ -83,6 +175,10 @@ class DB:
     def one(self, sql: str, args: tuple = ()) -> dict | None:
         rows = self.query(sql, args)
         return rows[0] if rows else None
+
+    def value(self, sql: str, args: tuple = ()):
+        row = self.one(sql, args)
+        return next(iter(row.values())) if row else None
 
     # Segments
 
@@ -100,9 +196,9 @@ class DB:
 
     # Events
 
-    def open_event(self, kind: str, zone: str | None, start_ts: float) -> int:
-        return self.execute("INSERT INTO events(kind, zone, start_ts) VALUES (?,?,?)",
-                            (kind, zone, start_ts)).lastrowid
+    def open_event(self, tank_id: int | None, kind: str, spot_id: int | None, start_ts: float) -> int:
+        return self.execute("INSERT INTO events(tank_id, kind, spot_id, start_ts) VALUES (?,?,?,?)",
+                            (tank_id, kind, spot_id, start_ts)).lastrowid
 
     def close_event(self, ev_id: int, end_ts: float, peak: float, peak_ts: float, thumb: str | None) -> None:
         self.execute("UPDATE events SET end_ts=?, peak=?, peak_ts=?, thumb=? WHERE id=?",
@@ -110,7 +206,30 @@ class DB:
 
     # Timelapses
 
-    def add_timelapse(self, start_ts: float, end_ts: float, params: dict, created_ts: float) -> int:
+    def add_timelapse(self, tank_id: int | None, start_ts: float, end_ts: float, params: dict,
+                      created_ts: float, auto: bool = False) -> int:
         return self.execute(
-            "INSERT INTO timelapses(created_ts, start_ts, end_ts, params, status) VALUES (?,?,?,?, 'queued')",
-            (created_ts, start_ts, end_ts, json.dumps(params))).lastrowid
+            """INSERT INTO timelapses(tank_id, created_ts, start_ts, end_ts, params, status, auto)
+               VALUES (?,?,?,?,?, 'queued', ?)""",
+            (tank_id, created_ts, start_ts, end_ts, json.dumps(params), int(auto))).lastrowid
+
+    # Views
+
+    def view_at(self, ts: float) -> int | None:
+        row = self.one("SELECT tank_id FROM views WHERE ts <= ? ORDER BY ts DESC LIMIT 1", (ts,))
+        return row["tank_id"] if row else None
+
+    def tank_intervals(self, tank_id: int, start_ts: float, end_ts: float) -> list[tuple[float, float]]:
+        """Stretches of time in [start, end) when the camera was looking at this tank."""
+        before = self.one("SELECT tank_id FROM views WHERE ts <= ? ORDER BY ts DESC LIMIT 1", (start_ts,))
+        rows = self.query("SELECT ts, tank_id FROM views WHERE ts > ? AND ts < ? ORDER BY ts", (start_ts, end_ts))
+        out = []
+        current = before["tank_id"] if before else None
+        t = start_ts
+        for r in rows:
+            if current == tank_id:
+                out.append((t, r["ts"]))
+            current, t = r["tank_id"], r["ts"]
+        if current == tank_id:
+            out.append((t, end_ts))
+        return out

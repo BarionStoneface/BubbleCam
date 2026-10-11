@@ -21,30 +21,40 @@ detect:
   diff_threshold: 14      # raise if night sensor grain triggers motion
   min_blob_area: 12       # raise if shrimp and snails trigger the pleco zone
 
+# How eager each tank is (spotlighted animals, bursts) is set per tank in the app:
+# Setup > Advanced > sensitivity. These are the rest of the event timings.
 zone_events:
-  threshold: 0.01         # fraction of a watch zone moving
-  start_seconds: 3        # must keep moving this long: filters guppies swimming through
-  end_seconds: 15
+  end_seconds: 15         # a moment ends after this long with no movement
   pre_roll: 10
   post_roll: 5
+  max_seconds: 600        # longer stretches are split into 10 minute moments
 
 burst_events:
   enabled: true
-  ratio: 3.0              # burst = whole tank movement 3x its usual level for the last 10 minutes
-  floor: 0.02
+  floor: 0.02             # a burst must also be at least this much of the picture moving
+
+feeding:
+  top_share: 0.55         # feeding = a burst with most of the movement in the top quarter of the picture
 
 timelapse:
   max_speed: 300          # quiet stretches
   min_speed: 2            # while he's moving (1 = real time)
   ease_seconds: 20
-  driver: zone            # zone, tank or both
+  driver: spots           # spots (spotlighted animals), tank, or both
   nightly_at: "09:00"     # render last night automatically at this time ("" to turn off)
   night_start: "19:00"
   night_end: "09:00"
 
 storage:
   data_dir: /mnt/bubblecam/data
-  min_free_gb: 3          # oldest footage is deleted below this; starred events are kept
+  min_free_gb: 3          # oldest raw footage is deleted below this
+  clip_days: 30           # moments are kept this long (starred or tagged ones forever)
+  timelapse_days: 90      # timelapses too (starred ones forever)
+
+# Phone notifications are switched on in the app (Setup). To change the time of the morning
+# summary, uncomment:
+# notify:
+#   morning_at: "09:05"
 
 web:
   # 127.0.0.1 keeps it off your home network; Tailscale serve and the Pi's own screen still reach it.

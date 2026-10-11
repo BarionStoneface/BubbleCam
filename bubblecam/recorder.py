@@ -2,9 +2,10 @@
 
 Each segment is three or four files in data/rec/YYYY-MM-DD/:
   HHMMSS.mp4        real time video (H.264, keyframe every second)
-  HHMMSS.act        one record per video frame: timestamp, zone score, tank score
+  HHMMSS.act        one record per video frame: timestamp, whole tank motion, motion for up to four
+                    spotlighted animals (by slot), and which tank the camera was looking at
   HHMMSS.proxy.mp4  the most active frame of each second, one per second
-  HHMMSS.proxy.act  one record per proxy frame: main frame index, timestamp, zone, tank
+  HHMMSS.proxy.act  one record per proxy frame: main frame index, timestamp, best spot score, tank
 
 The proxy is what lets the dynamic timelapse skip quiet hours without decoding every frame.
 """
@@ -15,6 +16,7 @@ import logging
 import queue
 import subprocess
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -25,7 +27,7 @@ from .db import DB
 
 log = logging.getLogger(__name__)
 
-ACT_DTYPE = np.dtype([("ts", "<f8"), ("zone", "<f4"), ("tank", "<f4")])
+ACT_DTYPE = np.dtype([("ts", "<f8"), ("tank", "<f4"), ("spots", "<f4", (4,)), ("view", "<i2")])
 PROXY_DTYPE = np.dtype([("idx", "<i4"), ("ts", "<f8"), ("zone", "<f4"), ("tank", "<f4")])
 
 
@@ -89,10 +91,12 @@ class _Segment:
         self.bucket: int | None = None
         self.best: tuple[float, float, int, float, np.ndarray] | None = None
 
-    def write(self, frame: np.ndarray, ts: float, zone: float, tank: float) -> None:
+    def write(self, frame: np.ndarray, ts: float, tank: float, spots: np.ndarray, view: int) -> None:
         self.main.stdin.write(frame.tobytes())
-        rec = np.array([(ts, zone, tank)], ACT_DTYPE)
+        rec = np.zeros(1, ACT_DTYPE)
+        rec["ts"], rec["tank"], rec["spots"], rec["view"] = ts, tank, spots, view
         self.act.write(rec.tobytes())
+        zone = float(spots.max())
         idx = self.frames
         self.frames += 1
         self.last_ts = ts
@@ -113,15 +117,21 @@ class _Segment:
         self.best = None
 
     def close(self) -> None:
-        self._flush_proxy()
+        try:
+            self._flush_proxy()
+        except OSError:
+            pass
         for proc in (self.main, self.proxy):
             try:
                 proc.stdin.close()
                 proc.wait(timeout=30)
-            except (BrokenPipeError, subprocess.TimeoutExpired):
+            except (OSError, subprocess.TimeoutExpired):
                 proc.kill()
-        self.act.close()
-        self.proxy_act.close()
+        for f in (self.act, self.proxy_act):
+            try:
+                f.close()
+            except OSError:
+                pass
         self.db.close_segment(self.seg_id, self.last_ts, self.frames)
 
 
@@ -137,14 +147,15 @@ class Recorder:
         log.info("recording with %s", self.encoder)
         self.q: queue.Queue = queue.Queue(maxsize=int(fps * 2))
         self.dropped = 0
+        self.last_write = time.time()
         self.segment: _Segment | None = None
         self.thread = threading.Thread(target=self._run, name="recorder", daemon=True)
         self.running = True
         self.thread.start()
 
-    def submit(self, frame: np.ndarray, ts: float, zone: float, tank: float) -> None:
+    def submit(self, frame: np.ndarray, ts: float, tank: float, spots: np.ndarray, view: int) -> None:
         try:
-            self.q.put_nowait((frame, ts, zone, tank))
+            self.q.put_nowait((frame, ts, tank, spots, view))
         except queue.Full:
             self.dropped += 1
             if self.dropped % 100 == 1:
@@ -159,16 +170,21 @@ class Recorder:
                 continue
             if item is None:
                 break
-            frame, ts, zone, tank = item
+            frame, ts, tank, spots, view = item
             if self.segment is None or ts - self.segment.start_ts >= seg_len:
                 if self.segment:
                     self.segment.close()
                 self.segment = _Segment(self.rec_dir, ts, self.width, self.height, self.fps,
                                         self.encoder, self.cfg.bitrate, self.db)
             try:
-                self.segment.write(frame, ts, zone, tank)
-            except BrokenPipeError:
-                log.error("encoder died; starting a new segment")
+                self.segment.write(frame, ts, tank, spots, view)
+                self.last_write = time.time()
+            except (BrokenPipeError, OSError) as e:
+                log.error("recording write failed (%s); starting a new segment", e)
+                try:
+                    self.segment.close()
+                except Exception:
+                    pass
                 self.segment = None
         if self.segment:
             self.segment.close()

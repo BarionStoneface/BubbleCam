@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -62,6 +61,8 @@ class ZoneEventConfig:
     end_seconds: float = 15.0
     pre_roll: float = 10.0
     post_roll: float = 5.0
+    # Longer stretches are split into moments of at most this length (a shrimp fanning all night).
+    max_seconds: float = 600.0
 
 
 @dataclass
@@ -79,6 +80,18 @@ class BurstEventConfig:
 
 
 @dataclass
+class FeedingConfig:
+    # Feeding = a burst where most of the movement is at the surface (top quarter of the picture)...
+    top_share: float = 0.55
+    # ...lasting at least this long.
+    start_seconds: float = 4.0
+    end_seconds: float = 10.0
+    cooldown_minutes: float = 90.0
+    pre_roll: float = 15.0
+    post_roll: float = 10.0
+
+
+@dataclass
 class TimelapseConfig:
     output_fps: int = 30
     # Speed while nothing is happening, and while the pleco is moving (1 = real time).
@@ -86,10 +99,8 @@ class TimelapseConfig:
     min_speed: float = 2.0
     # How long the speed takes to ease down before movement and back up after it.
     ease_seconds: float = 20.0
-    # Pick the most active frame in each window once windows are at least this long (seconds of input).
-    best_frame_min_window: float = 1.0
-    # What drives the speed: "zone" (pleco zones), "tank" (whole tank), or "both".
-    driver: str = "zone"
+    # What drives the speed: "spots" (spotlighted animals), "tank" (whole tank), or "both".
+    driver: str = "spots"
     # Nightly automatic render. Empty string disables.
     nightly_at: str = "09:00"
     night_start: str = "19:00"
@@ -108,7 +119,8 @@ class PresenceConfig:
 @dataclass
 class NotifyConfig:
     # Push notifications through ntfy (free phone app). Turned on and off in the app;
-    # this is only the starting value.
+    # these are only the starting values. Quiet by default: one morning summary a day,
+    # plus a message if the system itself breaks.
     enabled: bool = False
     server: str = "https://ntfy.sh"
     # Empty = a long random topic is generated on first run and shown in the app.
@@ -116,16 +128,24 @@ class NotifyConfig:
     morning_at: str = "09:05"
     # Link opened when you tap a notification, e.g. your Tailscale address.
     public_url: str = ""
-    on_emerge: bool = True
+    morning: bool = True
+    system: bool = True
+    on_emerge: bool = False
     emerge_cooldown_minutes: float = 60.0
     on_burst: bool = False
+    # Optional outside check in (e.g. a free Healthchecks.io check URL): pinged every few minutes while
+    # all is well, so you hear about it even if the whole Pi dies. Can also be set in the app.
+    checkin_url: str = ""
 
 
 @dataclass
 class StorageConfig:
     data_dir: str = "data"
-    # Delete oldest recordings when free space drops below this.
+    # Raw real time footage is deleted oldest first when free space drops below this.
     min_free_gb: float = 3.0
+    # Moments (event clips) and timelapses are kept this long. Starred or tagged ones are kept for good.
+    clip_days: int = 30
+    timelapse_days: int = 90
 
 
 @dataclass
@@ -143,6 +163,7 @@ class Config:
     detect: DetectConfig = field(default_factory=DetectConfig)
     zone_events: ZoneEventConfig = field(default_factory=ZoneEventConfig)
     burst_events: BurstEventConfig = field(default_factory=BurstEventConfig)
+    feeding: FeedingConfig = field(default_factory=FeedingConfig)
     timelapse: TimelapseConfig = field(default_factory=TimelapseConfig)
     presence: PresenceConfig = field(default_factory=PresenceConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
@@ -172,37 +193,3 @@ def load_config(path: str | Path | None) -> Config:
             _merge(cfg, yaml.safe_load(f) or {})
     return cfg
 
-
-# Zones are edited from the web UI, so they live in their own file in the data dir
-# rather than in the hand-edited config.
-#
-# Each zone: {"name": str, "kind": "watch" | "ignore" | "home", "x": float, "y": float, "w": float, "h": float}
-# A "home" zone is the cave mouth, used to tell whether he's in or out.
-# Coordinates are fractions of the frame (0 to 1), so they survive resolution changes.
-
-def load_zones(data_dir: Path) -> list[dict]:
-    p = data_dir / "zones.json"
-    if not p.exists():
-        return []
-    return json.loads(p.read_text())
-
-
-def save_zones(data_dir: Path, zones: list[dict]) -> None:
-    clean = []
-    for z in zones:
-        kind = z.get("kind", "watch")
-        if kind not in ("watch", "ignore", "home"):
-            raise ValueError(f"bad zone kind: {kind}")
-        if kind == "home" and any(c["kind"] == "home" for c in clean):
-            raise ValueError("only one home zone (the cave mouth) is allowed")
-        x, y = float(z["x"]), float(z["y"])
-        w, h = float(z["w"]), float(z["h"])
-        x, y = min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0)
-        w, h = min(max(w, 0.0), 1.0 - x), min(max(h, 0.0), 1.0 - y)
-        if w <= 0 or h <= 0:
-            continue
-        clean.append({"name": str(z.get("name") or kind), "kind": kind, "x": x, "y": y, "w": w, "h": h})
-    data_dir.mkdir(parents=True, exist_ok=True)
-    tmp = data_dir / "zones.json.tmp"
-    tmp.write_text(json.dumps(clean, indent=2))
-    tmp.replace(data_dir / "zones.json")

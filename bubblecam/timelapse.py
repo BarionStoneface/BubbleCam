@@ -37,19 +37,25 @@ class TimelapseParams:
     max_speed: float = 300.0
     min_speed: float = 2.0
     ease_seconds: float = 20.0
-    driver: str = "zone"          # "zone", "tank" or "both"
+    driver: str = "spots"         # "spots" (all spotlighted animals), "spot:<slot>", "tank" or "both"
     output_fps: int = 30
     overlay: bool = True
 
 
-def interest(zone: np.ndarray, tank: np.ndarray, driver: str, zone_ref: float, tank_ref: float) -> np.ndarray:
-    zi = np.clip(zone / max(zone_ref, 1e-6), 0, 1)
+def interest(spot: np.ndarray, tank: np.ndarray, driver: str, spot_ref: float, tank_ref: float) -> np.ndarray:
+    si = np.clip(spot / max(spot_ref, 1e-6), 0, 1)
     ti = np.clip(tank / max(tank_ref, 1e-6), 0, 1)
-    if driver == "zone":
-        return zi
     if driver == "tank":
         return ti
-    return np.maximum(zi, ti)
+    if driver == "both":
+        return np.maximum(si, ti)
+    return si
+
+
+def driver_slots(driver: str, tank) -> list[int]:
+    if driver.startswith("spot:"):
+        return [int(driver.split(":", 1)[1])]
+    return [s.slot for s in tank.spotlights] if tank else []
 
 
 def ease(ts: np.ndarray, raw: np.ndarray, ease_seconds: float) -> np.ndarray:
@@ -101,32 +107,40 @@ class Pick:
     speed: float
 
 
-def plan(segments: list[dict], cfg: Config, p: TimelapseParams, start_ts: float, end_ts: float) -> list[Pick]:
-    ts_l, zone_l, tank_l, seg_l, idx_l = [], [], [], [], []
+def plan(segments: list[dict], cfg: Config, p: TimelapseParams, start_ts: float, end_ts: float,
+         tank=None) -> list[Pick]:
+    """tank: only use footage from while the camera was looking at this tank (None = all footage)."""
+    ts_l, spot_l, tank_l, seg_l, idx_l = [], [], [], [], []
     proxies: list[np.ndarray] = []
+    slots = driver_slots(p.driver, tank)
     fps = 30.0
     for si, seg in enumerate(segments):
         video = Path(seg["path"])
         act = read_act(act_path(video))
-        sel = np.flatnonzero((act["ts"] >= start_ts) & (act["ts"] < end_ts))
+        keep = (act["ts"] >= start_ts) & (act["ts"] < end_ts)
+        if tank is not None:
+            keep &= act["view"] == tank.id
+        sel = np.flatnonzero(keep)
         proxies.append(read_proxy_act(proxy_paths(video)[1]))
         if len(sel) == 0:
             continue
         fps = seg["fps"]
         ts_l.append(act["ts"][sel])
-        zone_l.append(act["zone"][sel])
+        spots = act["spots"][sel]
+        spot_l.append(spots[:, slots].max(axis=1) if slots else np.zeros(len(sel), np.float32))
         tank_l.append(act["tank"][sel])
         seg_l.append(np.full(len(sel), si))
         idx_l.append(sel)
     if not ts_l:
         return []
     ts = np.concatenate(ts_l)
-    zone = np.concatenate(zone_l).astype(np.float64)
-    tank = np.concatenate(tank_l).astype(np.float64)
+    spot = np.concatenate(spot_l).astype(np.float64)
+    tankm = np.concatenate(tank_l).astype(np.float64)
     seg = np.concatenate(seg_l)
     idx = np.concatenate(idx_l)
 
-    raw = interest(zone, tank, p.driver, cfg.zone_events.threshold, cfg.burst_events.floor)
+    spot_ref = tank.zone_threshold if tank else cfg.zone_events.threshold
+    raw = interest(spot, tankm, p.driver, spot_ref, cfg.burst_events.floor)
     speed = speed_curve(ease(ts, raw, p.ease_seconds), p.min_speed, p.max_speed)
     starts, ends = windows(ts, speed, p.output_fps, fps)
 
@@ -136,7 +150,7 @@ def plan(segments: list[dict], cfg: Config, p: TimelapseParams, start_ts: float,
         for j, main_idx in enumerate(pa["idx"]):
             proxy_of[(si, int(main_idx))] = j
 
-    score = zone if p.driver == "zone" else tank if p.driver == "tank" else zone + tank
+    score = tankm if p.driver == "tank" else spot + tankm if p.driver == "both" else spot
     picks = []
     for a, b in zip(starts, ends):
         span = ts[b] - ts[a] + 1.0 / fps
@@ -166,12 +180,13 @@ def _overlay(frame: np.ndarray, ts: float, speed: float) -> np.ndarray:
     return out
 
 
-def render(db: DB, cfg: Config, tl_id: int) -> None:
+def render(db: DB, cfg: Config, tl_id: int, tanks=None) -> None:
     row = db.one("SELECT * FROM timelapses WHERE id=?", (tl_id,))
     p = TimelapseParams(**json.loads(row["params"]))
     db.execute("UPDATE timelapses SET status='rendering' WHERE id=?", (tl_id,))
     segments = db.segments_between(row["start_ts"], row["end_ts"])
-    picks = plan(segments, cfg, p, row["start_ts"], row["end_ts"])
+    tank = tanks.get(row["tank_id"]) if tanks is not None else None
+    picks = plan(segments, cfg, p, row["start_ts"], row["end_ts"], tank)
     if not picks:
         db.execute("UPDATE timelapses SET status='failed', error='no footage in that range' WHERE id=?", (tl_id,))
         return
@@ -228,17 +243,18 @@ def render(db: DB, cfg: Config, tl_id: int) -> None:
 
 
 class TimelapseWorker:
-    """Renders queued timelapses one at a time, and queues the nightly one."""
+    """Renders queued timelapses one at a time, and queues each tank's nightly one."""
 
-    def __init__(self, db: DB, cfg: Config):
-        self.db, self.cfg = db, cfg
+    def __init__(self, db: DB, cfg: Config, tanks):
+        self.db, self.cfg, self.tanks = db, cfg, tanks
         self.wake = threading.Event()
         self.last_nightly: str | None = None
         db.execute("UPDATE timelapses SET status='queued' WHERE status='rendering'")
         threading.Thread(target=self._run, name="timelapse", daemon=True).start()
 
-    def queue(self, start_ts: float, end_ts: float, params: TimelapseParams) -> int:
-        tl_id = self.db.add_timelapse(start_ts, end_ts, asdict(params), time.time())
+    def queue(self, tank_id: int | None, start_ts: float, end_ts: float, params: TimelapseParams,
+              auto: bool = False) -> int:
+        tl_id = self.db.add_timelapse(tank_id, start_ts, end_ts, asdict(params), time.time(), auto)
         self.wake.set()
         return tl_id
 
@@ -260,10 +276,18 @@ class TimelapseWorker:
         start = datetime.combine(now.date(), datetime.strptime(t.night_start, "%H:%M").time())
         if start >= end:
             start -= timedelta(days=1)
-        exists = self.db.one("SELECT id FROM timelapses WHERE start_ts=? AND end_ts=?",
-                             (start.timestamp(), end.timestamp()))
-        if not exists:
-            self.queue(start.timestamp(), end.timestamp(), self.default_params())
+        for tank in self.tanks.all():
+            # Only tanks the camera actually watched for a while last night.
+            watched = sum(b - a for a, b in self.db.tank_intervals(tank.id, start.timestamp(), end.timestamp()))
+            if watched < 600:
+                continue
+            exists = self.db.one("SELECT id FROM timelapses WHERE tank_id=? AND start_ts=? AND end_ts=?",
+                                 (tank.id, start.timestamp(), end.timestamp()))
+            if not exists:
+                p = self.default_params()
+                if not tank.spotlights:
+                    p.driver = "tank"
+                self.queue(tank.id, start.timestamp(), end.timestamp(), p, auto=True)
 
     def _run(self) -> None:
         while True:
@@ -273,7 +297,7 @@ class TimelapseWorker:
                 job = self.db.one("SELECT id FROM timelapses WHERE status='queued' ORDER BY id LIMIT 1")
                 if job:
                     log.info("rendering timelapse %s", job["id"])
-                    render(self.db, self.cfg, job["id"])
+                    render(self.db, self.cfg, job["id"], self.tanks)
                     continue
             except Exception as e:  # keep the worker alive whatever happens
                 log.exception("timelapse worker error")

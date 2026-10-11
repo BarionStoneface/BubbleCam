@@ -114,6 +114,11 @@ Wants=network-online.target
 User=$ME
 WorkingDirectory=$REPO_DIR
 ExecStart=$REPO_DIR/.venv/bin/python -m bubblecam --config $CONFIG
+# The app checks in every 10 s; if it stops making progress for 2 minutes, systemd restarts it.
+Type=notify
+NotifyAccess=main
+WatchdogSec=120
+TimeoutStartSec=180
 Restart=always
 RestartSec=5
 Nice=-5
@@ -121,6 +126,18 @@ Nice=-5
 [Install]
 WantedBy=multi-user.target
 EOF
+# If the whole Pi locks up, the hardware watchdog reboots it.
+sudo mkdir -p /etc/systemd/system.conf.d
+printf '[Manager]\nRuntimeWatchdogSec=15\n' | sudo tee /etc/systemd/system.conf.d/bubblecam-watchdog.conf >/dev/null
+if [[ ! -e /dev/watchdog ]]; then
+  BOOTCFG=/boot/firmware/config.txt
+  [[ -f $BOOTCFG ]] || BOOTCFG=/boot/config.txt
+  if [[ -f $BOOTCFG ]] && ! grep -q "^dtparam=watchdog=on" "$BOOTCFG"; then
+    echo "dtparam=watchdog=on" | sudo tee -a "$BOOTCFG" >/dev/null
+    note "hardware watchdog switched on; it takes effect after the next restart of the Pi"
+  fi
+fi
+sudo systemctl daemon-reexec
 sudo systemctl daemon-reload
 sudo systemctl enable -q bubblecam
 sudo systemctl restart bubblecam
