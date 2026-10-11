@@ -1,0 +1,52 @@
+# Copy to config.yaml and edit. Anything left out uses the defaults in bubblecam/config.py.
+
+camera:
+  source: v4l2            # "synthetic" runs a fake tank, handy for trying the app without the camera
+  device: /dev/video0
+  width: 1280
+  height: 800
+  fps: 30
+  manual_exposure: true
+  # In units of 100 microseconds on most UVC cameras: 150 = 15 ms.
+  # Keep it under 333 or the camera can't hold 30 fps. Raise gain before exposure if the night image is dark.
+  exposure: 150
+  gain: 0
+
+record:
+  segment_minutes: 10
+  encoder: auto           # Pi 4 hardware encoder if it works, otherwise libx264
+  bitrate: 1500k          # about 16 GB a day of real time footage
+
+detect:
+  diff_threshold: 14      # raise if night sensor grain triggers motion
+  min_blob_area: 12       # raise if shrimp and snails trigger the pleco zone
+
+zone_events:
+  threshold: 0.01         # fraction of a watch zone moving
+  start_seconds: 3        # must keep moving this long: filters guppies swimming through
+  end_seconds: 15
+  pre_roll: 10
+  post_roll: 5
+
+burst_events:
+  enabled: true
+  ratio: 3.0              # burst = whole tank movement 3x its usual level for the last 10 minutes
+  floor: 0.02
+
+timelapse:
+  max_speed: 300          # quiet stretches
+  min_speed: 2            # while he's moving (1 = real time)
+  ease_seconds: 20
+  driver: zone            # zone, tank or both
+  nightly_at: "09:00"     # render last night automatically at this time ("" to turn off)
+  night_start: "19:00"
+  night_end: "09:00"
+
+storage:
+  data_dir: /mnt/bubblecam/data
+  min_free_gb: 3          # oldest footage is deleted below this; starred events are kept
+
+web:
+  # 127.0.0.1 keeps it off your home network; Tailscale serve and the Pi's own screen still reach it.
+  host: 127.0.0.1
+  port: 8080

@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1014">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg">
+<title>BubbleCam</title>
+<style>
+  :root {
+    --bg: #0b1014; --panel: #131b21; --line: #22303a; --text: #d8e4ea; --dim: #7d929e;
+    --accent: #5fd0c0; --warn: #f0b45a; --bad: #e46a6a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, sans-serif;
+         padding-bottom: env(safe-area-inset-bottom); }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line);
+           position: sticky; top: 0; background: var(--bg); z-index: 5; }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: .3px; }
+  nav { display: flex; gap: 2px; overflow-x: auto; }
+  @media (max-width: 560px) { header h1 { display: none; } header { padding: 8px; } nav button { padding: 8px 9px; } }
+  nav button { background: none; border: 0; color: var(--dim); padding: 8px 10px; border-radius: 8px; font: inherit; }
+  nav button.on { color: var(--text); background: var(--panel); }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  section { display: none; } section.on { display: block; }
+  .live img { width: 100%; border-radius: 10px; background: #000; display: block; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+  .meter { flex: 1; min-width: 140px; }
+  .meter .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; margin-top: 4px; }
+  .meter .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  .dim { color: var(--dim); font-size: 13px; }
+  button.b, select, input { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+           border-radius: 8px; padding: 8px 12px; font: inherit; }
+  button.b.primary { background: var(--accent); color: #04201c; border-color: var(--accent); font-weight: 600; }
+  button.b:disabled { opacity: .5; }
+  .chips button { border-radius: 999px; }
+  .chips button.on { border-color: var(--accent); color: var(--accent); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .ev { padding: 0; overflow: hidden; cursor: pointer; }
+  .ev img, .ev .noimg { width: 100%; aspect-ratio: 16/10; object-fit: cover; display: block; background: #000; }
+  .ev .meta { padding: 8px 10px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .tag { font-size: 12px; padding: 2px 7px; border-radius: 6px; background: var(--line); }
+  .tag.zone { color: var(--accent); } .tag.burst { color: var(--warn); }
+  .star { background: none; border: 0; font-size: 20px; color: var(--dim); cursor: pointer; padding: 0 4px; }
+  .star.on { color: var(--warn); }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px;
+           padding: 12px; width: min(960px, 96vw); }
+  dialog::backdrop { background: rgba(0,0,0,.7); }
+  dialog video { width: 100%; border-radius: 8px; background: #000; }
+  label.f { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--dim); }
+  label.f input[type=range] { padding: 0; accent-color: var(--accent); }
+  .form { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); font-size: 14px; }
+  th { color: var(--dim); font-weight: 500; }
+  canvas { width: 100%; display: block; }
+  .zonebox { position: relative; touch-action: none; user-select: none; }
+  .zonebox img { width: 100%; display: block; border-radius: 10px; }
+  .zonebox canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .zl { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+  .zl input { flex: 1; min-width: 0; }
+  .progress { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .progress i { display: block; height: 100%; background: var(--accent); }
+  body.kiosk header { display: none; } body.kiosk main { max-width: none; padding: 0; }
+  body.kiosk .live .row { display: none; } body.kiosk .live img { border-radius: 0; height: 100vh; object-fit: contain; }
+</style>
+</head>
+<body>
+<header>
+  <h1>BubbleCam</h1>
+  <nav id="nav">
+    <button data-t="live" class="on">Live</button>
+    <button data-t="events">Events</button>
+    <button data-t="timelapse">Timelapse</button>
+    <button data-t="activity">Activity</button>
+    <button data-t="zones">Zones</button>
+  </nav>
+</header>
+<main>
+
+<section id="live" class="live on">
+  <img id="liveimg" alt="live view">
+  <div class="row">
+    <div class="meter card"><div class="dim">Pleco zone <span id="zv"></span></div><div class="bar"><i id="zbar"></i></div></div>
+    <div class="meter card"><div class="dim">Whole tank <span id="tv"></span></div><div class="bar"><i id="tbar"></i></div></div>
+  </div>
+  <div class="row">
+    <button class="b" id="ovl">Boxes: on</button>
+    <a class="b" href="/api/snapshot.jpg" download="bubblecam.jpg" style="text-decoration:none;color:inherit">Snapshot</a>
+    <span class="dim" id="stat"></span>
+  </div>
+</section>
+
+<section id="events">
+  <div class="row chips" id="evfilter">
+    <button class="b on" data-f="">All</button>
+    <button class="b" data-f="zone">Pleco</button>
+    <button class="b" data-f="burst">Bursts</button>
+    <button class="b" data-f="starred">Starred</button>
+  </div>
+  <div class="grid" id="evgrid"></div>
+  <div class="row"><button class="b" id="evmore">Load more</button></div>
+</section>
+
+<section id="timelapse">
+  <div class="card">
+    <div class="row chips">
+      <button class="b" id="tlnight">Last night</button>
+      <button class="b" id="tl24">Last 24 h</button>
+      <button class="b" id="tl1">Last hour</button>
+    </div>
+    <div class="form">
+      <label class="f">From <input type="datetime-local" id="tlstart"></label>
+      <label class="f">To <input type="datetime-local" id="tlend"></label>
+      <label class="f">Quiet speed: <b id="maxv"></b><input type="range" id="maxs" min="1" max="3.5" step="0.01"></label>
+      <label class="f">Movement speed: <b id="minv"></b><input type="range" id="mins" min="1" max="30" step="1"></label>
+      <label class="f">Ease in and out: <b id="easev"></b><input type="range" id="ease" min="0" max="120" step="5"></label>
+      <label class="f">Slow down for
+        <select id="driver"><option value="zone">Pleco zones</option><option value="tank">Whole tank</option><option value="both">Either</option></select>
+      </label>
+    </div>
+    <div class="row"><button class="b primary" id="tlgo">Render</button><span class="dim" id="tlmsg"></span></div>
+  </div>
+  <div id="tllist" style="margin-top:14px"></div>
+</section>
+
+<section id="activity">
+  <div class="card">
+    <div class="dim">Last 24 hours: pleco zone movement (bars), whole tank (line)</div>
+    <canvas id="chart" height="180"></canvas>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <table><thead><tr><th>Night of</th><th>Moving</th><th>First out</th><th>Last seen</th><th>Visits</th></tr></thead>
+    <tbody id="nights"></tbody></table>
+  </div>
+</section>
+
+<section id="zones">
+  <p class="dim">Drag on the picture to draw a box. <b style="color:var(--accent)">Watch</b> zones are where the pleco is tracked (his cave, his favourite spots).
+    <b>Ignore</b> zones are cut out completely: bubbles, filter outflow, swaying plants.</p>
+  <div class="zonebox" id="zbox"><img id="zimg" alt="snapshot"><canvas id="zcan"></canvas></div>
+  <div class="row"><span class="dim">New box is:</span>
+    <select id="znewkind"><option value="watch">Watch</option><option value="ignore">Ignore</option></select>
+    <button class="b" id="zrefresh">New snapshot</button>
+    <button class="b primary" id="zsave">Save zones</button><span class="dim" id="zmsg"></span></div>
+  <div id="zlist"></div>
+</section>
+
+</main>
+
+<dialog id="player">
+  <video id="pvideo" controls playsinline></video>
+  <div class="row"><span id="pinfo" class="dim"></span><span style="flex:1"></span>
+    <a id="pdl" class="b" download style="text-decoration:none;color:inherit">Download</a>
+    <button class="b" onclick="player.close()">Close</button></div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = async (url, opts = {}) => {
+  const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  if (!r.ok) throw new Error((await r.text()) || r.status);
+  return r.json();
+};
+const fmtTime = ts => new Date(ts * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+const fmtClock = ts => ts ? new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+const fmtDur = s => s < 60 ? `${Math.round(s)} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
+const toLocalInput = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+const params = new URLSearchParams(location.search);
+if (params.has('kiosk')) document.body.classList.add('kiosk');
+
+// Tabs
+let tab = 'live';
+const loaders = {};
+function show(t) {
+  tab = t;
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.t === t));
+  document.querySelectorAll('main section').forEach(s => s.classList.toggle('on', s.id === t));
+  // Only stream video while the live tab is visible: saves the Pi and the phone battery.
+  $('#liveimg').src = t === 'live' ? `/stream.mjpg?overlay=${overlay ? 1 : 0}&t=${Date.now()}` : '';
+  loaders[t] && loaders[t]();
+  history.replaceState(null, '', '#' + t);
+}
+$('#nav').onclick = e => e.target.dataset.t && show(e.target.dataset.t);
+
+// Live
+let overlay = true;
+$('#ovl').onclick = () => { overlay = !overlay; $('#ovl').textContent = `Boxes: ${overlay ? 'on' : 'off'}`; show('live'); };
+async function pollStatus() {
+  try {
+    const s = await api('/api/status');
+    const zr = Math.min(1, s.zone / (s.zone_threshold * 3)), tr = Math.min(1, s.tank / 0.1);
+    $('#zbar').style.width = (zr * 100) + '%'; $('#tbar').style.width = (tr * 100) + '%';
+    $('#zbar').style.background = s.zone >= s.zone_threshold ? 'var(--warn)' : 'var(--accent)';
+    $('#zv').textContent = (s.zone * 100).toFixed(1) + '%'; $('#tv').textContent = (s.tank * 100).toFixed(1) + '%';
+    const bits = [`${s.fps} fps`, s.recording ? `recording (${s.encoder})` : 'not recording', `${s.disk_free_gb} GB free`];
+    if (s.oldest_recording) bits.push(`footage back to ${fmtTime(s.oldest_recording)}`);
+    if (s.settling) bits.push('lights changed, settling');
+    if (s.open_events.length) bits.push('event in progress');
+    if (s.dropped) bits.push(`${s.dropped} frames dropped`);
+    $('#stat').textContent = bits.join(' · ');
+  } catch (e) { $('#stat').textContent = 'offline'; }
+}
+setInterval(() => tab === 'live' && pollStatus(), 1000);
+
+// Events
+let evFilter = '', evOldest = null;
+$('#evfilter').onclick = e => {
+  if (e.target.dataset.f === undefined) return;
+  evFilter = e.target.dataset.f;
+  document.querySelectorAll('#evfilter button').forEach(b => b.classList.toggle('on', b === e.target));
+  loadEvents(true);
+};
+async function loadEvents(reset = true) {
+  if (reset) { $('#evgrid').innerHTML = ''; evOldest = null; }
+  const q = new URLSearchParams({ limit: 40 });
+  if (evFilter === 'starred') q.set('starred', 'true'); else if (evFilter) q.set('kind', evFilter);
+  if (evOldest) q.set('before', evOldest);
+  const evs = await api('/api/events?' + q);
+  for (const ev of evs) {
+    evOldest = ev.start_ts;
+    const card = document.createElement('div');
+    card.className = 'card ev';
+    const dur = ev.end_ts ? fmtDur(ev.end_ts - ev.start_ts) : 'happening now';
+    const label = ev.kind === 'zone' ? (ev.zone || 'pleco') : 'burst';
+    card.innerHTML = `${ev.has_thumb ? `<img loading="lazy" src="/api/events/${ev.id}/thumb.jpg">` : '<div class="noimg"></div>'}
+      <div class="meta"><div><span class="tag ${ev.kind}">${label}</span> <span class="dim">${fmtTime(ev.start_ts)} · ${dur}</span></div>
+      <div><button class="star ${ev.starred ? 'on' : ''}" title="keep forever">★</button><button class="star" title="delete">✕</button></div></div>`;
+    const [star, del] = card.querySelectorAll('.star');
+    star.onclick = async e => { e.stopPropagation(); const on = !star.classList.contains('on');
+      await api(`/api/events/${ev.id}/star?on=${on}`, { method: 'POST' }); star.classList.toggle('on', on); };
+    del.onclick = async e => { e.stopPropagation(); if (!confirm('Delete this event?')) return;
+      await api(`/api/events/${ev.id}`, { method: 'DELETE' }); card.remove(); };
+    card.onclick = () => play(`/api/events/${ev.id}/clip.mp4?t=${Date.now()}`, `${label} · ${fmtTime(ev.start_ts)} · ${dur}`);
+    $('#evgrid').append(card);
+  }
+  $('#evmore').style.display = evs.length < 40 ? 'none' : '';
+  if (!$('#evgrid').children.length) $('#evgrid').innerHTML = '<p class="dim">Nothing yet.</p>';
+}
+$('#evmore').onclick = () => loadEvents(false);
+loaders.events = () => loadEvents(true);
+
+function play(src, info) {
+  $('#pvideo').src = src; $('#pinfo').textContent = info; $('#pdl').href = src;
+  player.showModal(); $('#pvideo').play().catch(() => {});
+}
+player.addEventListener('close', () => { $('#pvideo').pause(); $('#pvideo').removeAttribute('src'); });
+
+// Timelapse
+let defaults = null;
+const maxFromSlider = v => { const x = 10 ** v; return x < 100 ? Math.round(x) : Math.round(x / 10) * 10; };
+function setRange(start, end) { $('#tlstart').value = toLocalInput(start); $('#tlend').value = toLocalInput(end); }
+function lastNight() {
+  const [sh, sm] = defaults.night_start.split(':').map(Number), [eh, em] = defaults.night_end.split(':').map(Number);
+  const end = new Date(); end.setHours(eh, em, 0, 0);
+  if (end > new Date()) end.setDate(end.getDate() - 1);
+  const start = new Date(end); start.setHours(sh, sm, 0, 0);
+  if (start >= end) start.setDate(start.getDate() - 1);
+  setRange(start, end);
+}
+function sliderLabels() {
+  $('#maxv').textContent = maxFromSlider($('#maxs').value) + 'x';
+  $('#minv').textContent = $('#mins').value === '1' ? 'real time' : $('#mins').value + 'x';
+  $('#easev').textContent = $('#ease').value + ' s';
+}
+['#maxs', '#mins', '#ease'].forEach(s => $(s).oninput = sliderLabels);
+$('#tlnight').onclick = lastNight;
+$('#tl24').onclick = () => setRange(new Date(Date.now() - 864e5), new Date());
+$('#tl1').onclick = () => setRange(new Date(Date.now() - 36e5), new Date());
+$('#tlgo').onclick = async () => {
+  const body = {
+    start_ts: new Date($('#tlstart').value).getTime() / 1000, end_ts: new Date($('#tlend').value).getTime() / 1000,
+    max_speed: maxFromSlider($('#maxs').value), min_speed: +$('#mins').value, ease_seconds: +$('#ease').value,
+    driver: $('#driver').value,
+  };
+  try { await api('/api/timelapses', { method: 'POST', body: JSON.stringify(body) }); $('#tlmsg').textContent = 'Queued.'; loadTimelapses(); }
+  catch (e) { $('#tlmsg').textContent = e.message; }
+};
+let tlTimer = null;
+async function loadTimelapses() {
+  const rows = await api('/api/timelapses');
+  $('#tllist').innerHTML = '';
+  for (const r of rows) {
+    const p = JSON.parse(r.params || '{}');
+    const el = document.createElement('div'); el.className = 'card'; el.style.marginBottom = '10px';
+    const status = r.status === 'rendering' ? `<div class="progress"><i style="width:${(r.progress * 100).toFixed(0)}%"></i></div>`
+      : r.status === 'failed' ? `<span style="color:var(--bad)">failed: ${r.error || ''}</span>` : `<span class="dim">${r.status}</span>`;
+    el.innerHTML = `<div class="row" style="margin:0"><div style="flex:1;min-width:200px"><b>${fmtTime(r.start_ts)} to ${fmtTime(r.end_ts)}</b>
+      <div class="dim">${p.max_speed}x quiet, ${p.min_speed === 1 ? 'real time' : p.min_speed + 'x'} on movement, ${p.driver}</div>${status}</div>
+      ${r.has_file ? `<button class="b primary" data-a="play">Play</button>` : ''}<button class="b" data-a="del">Delete</button></div>`;
+    el.onclick = async e => {
+      const a = e.target.dataset.a;
+      if (a === 'play') play(`/api/timelapses/${r.id}.mp4`, `Timelapse ${fmtTime(r.start_ts)}`);
+      if (a === 'del' && confirm('Delete this timelapse?')) { await api(`/api/timelapses/${r.id}`, { method: 'DELETE' }).catch(e => alert(e.message)); loadTimelapses(); }
+    };
+    $('#tllist').append(el);
+  }
+  clearTimeout(tlTimer);
+  if (tab === 'timelapse' && rows.some(r => r.status === 'queued' || r.status === 'rendering')) tlTimer = setTimeout(loadTimelapses, 3000);
+}
+loaders.timelapse = async () => {
+  if (!defaults) {
+    defaults = await api('/api/defaults');
+    $('#maxs').value = Math.log10(defaults.max_speed); $('#mins').value = defaults.min_speed;
+    $('#ease').value = defaults.ease_seconds; $('#driver').value = defaults.driver;
+    lastNight(); sliderLabels();
+  }
+  loadTimelapses();
+};
+
+// Activity
+loaders.activity = async () => {
+  const [rows, nights] = await Promise.all([api('/api/activity?hours=24'), api('/api/nights?days=14')]);
+  drawChart(rows);
+  $('#nights').innerHTML = nights.map(n => `<tr><td>${n.night}</td><td>${Math.round(n.moving_minutes)} min</td>
+    <td>${fmtClock(n.first)}</td><td>${fmtClock(n.last)}</td><td>${n.events}</td></tr>`).join('') ||
+    '<tr><td colspan="5" class="dim">No data yet.</td></tr>';
+};
+function drawChart(rows) {
+  const c = $('#chart'), dpr = devicePixelRatio || 1, W = c.clientWidth, H = 180;
+  c.width = W * dpr; c.height = H * dpr; const g = c.getContext('2d'); g.scale(dpr, dpr);
+  g.clearRect(0, 0, W, H);
+  const now = Date.now() / 1000, t0 = now - 86400, bin = 600, nb = 144;
+  const moving = new Array(nb).fill(0), tank = new Array(nb).fill(0), cnt = new Array(nb).fill(0);
+  for (const r of rows) { const i = Math.floor((r.minute_ts - t0) / bin); if (i < 0 || i >= nb) continue;
+    moving[i] += r.zone_moving_s || 0; tank[i] += r.tank_mean || 0; cnt[i]++; }
+  const css = getComputedStyle(document.documentElement);
+  const bw = W / nb, pad = 18, ch = H - pad;
+  g.fillStyle = css.getPropertyValue('--accent');
+  const mmax = Math.max(60, ...moving);
+  moving.forEach((m, i) => { const h = m / mmax * ch * 0.95; g.fillRect(i * bw, ch - h, Math.max(1, bw - 1), h); });
+  const tmax = Math.max(0.01, ...tank.map((t, i) => cnt[i] ? t / cnt[i] : 0));
+  g.strokeStyle = css.getPropertyValue('--warn'); g.lineWidth = 1.5; g.beginPath();
+  tank.forEach((t, i) => { const y = ch - (cnt[i] ? t / cnt[i] / tmax : 0) * ch * 0.9; i ? g.lineTo(i * bw + bw / 2, y) : g.moveTo(bw / 2, y); });
+  g.stroke();
+  g.fillStyle = css.getPropertyValue('--dim'); g.font = '11px system-ui';
+  for (let h = 0; h < 24; h += 3) {
+    const ts = t0 + h * 3600; const d = new Date(ts * 1000);
+    g.fillText(d.toLocaleTimeString([], { hour: '2-digit' }), h * 6 * bw, H - 4);
+  }
+}
+
+// Zones
+let zones = [], drag = null;
+const zcan = $('#zcan');
+function zrender() {
+  const r = zcan.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  zcan.width = r.width * dpr; zcan.height = r.height * dpr;
+  const g = zcan.getContext('2d'); g.scale(dpr, dpr); g.lineWidth = 2; g.font = '13px system-ui';
+  const all = drag ? [...zones, drag] : zones;
+  for (const z of all) {
+    const col = z.kind === 'watch' ? '#5fd0c0' : '#c0c0c0';
+    g.strokeStyle = col; g.fillStyle = z.kind === 'watch' ? 'rgba(95,208,192,.12)' : 'rgba(0,0,0,.45)';
+    const x = z.x * r.width, y = z.y * r.height, w = z.w * r.width, h = z.h * r.height;
+    g.fillRect(x, y, w, h); g.strokeRect(x, y, w, h);
+    g.fillStyle = col; g.fillText(z.name || '', x + 5, y + 16);
+  }
+}
+function zlist() {
+  $('#zlist').innerHTML = '';
+  zones.forEach((z, i) => {
+    const row = document.createElement('div'); row.className = 'zl';
+    row.innerHTML = `<input value="${z.name}"><select><option value="watch">Watch</option><option value="ignore">Ignore</option></select><button class="b">Remove</button>`;
+    const [name, kind, rm] = row.children;
+    kind.value = z.kind;
+    name.oninput = () => { z.name = name.value; zrender(); };
+    kind.onchange = () => { z.kind = kind.value; zrender(); };
+    rm.onclick = () => { zones.splice(i, 1); zlist(); zrender(); };
+    $('#zlist').append(row);
+  });
+}
+const rel = e => { const r = zcan.getBoundingClientRect();
+  return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))]; };
+zcan.onpointerdown = e => { zcan.setPointerCapture(e.pointerId); const [x, y] = rel(e);
+  const kind = $('#znewkind').value, n = zones.filter(z => z.kind === kind).length + 1;
+  drag = { x0: x, y0: y, x, y, w: 0, h: 0, kind, name: kind === 'watch' ? (n === 1 ? 'cave' : 'spot ' + n) : 'ignore ' + n }; };
+zcan.onpointermove = e => { if (!drag) return; const [x, y] = rel(e);
+  drag.x = Math.min(x, drag.x0); drag.y = Math.min(y, drag.y0); drag.w = Math.abs(x - drag.x0); drag.h = Math.abs(y - drag.y0); zrender(); };
+zcan.onpointerup = () => { if (drag && drag.w > 0.01 && drag.h > 0.01) { const { x0, y0, ...z } = drag; zones.push(z); zlist(); }
+  drag = null; zrender(); };
+$('#zrefresh').onclick = () => { $('#zimg').src = '/api/snapshot.jpg?t=' + Date.now(); };
+$('#zimg').onload = zrender;
+$('#zsave').onclick = async () => {
+  try { zones = await api('/api/zones', { method: 'PUT', body: JSON.stringify(zones) }); zlist(); zrender(); $('#zmsg').textContent = 'Saved.'; }
+  catch (e) { $('#zmsg').textContent = e.message; }
+};
+loaders.zones = async () => { zones = await api('/api/zones'); zlist(); $('#zrefresh').onclick(); };
+addEventListener('resize', () => { tab === 'zones' && zrender(); tab === 'activity' && loaders.activity(); });
+
+addEventListener('hashchange', () => { const t = location.hash.slice(1); t && t !== tab && show(t); });
+show(location.hash.slice(1) || 'live');
+</script>
+</body>
+</html>

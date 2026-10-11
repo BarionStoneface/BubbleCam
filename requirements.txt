@@ -1,0 +1,7 @@
+# On Raspberry Pi OS, prefer the apt packages for numpy/opencv:
+#   sudo apt install python3-opencv python3-numpy ffmpeg
+numpy
+opencv-python-headless
+fastapi
+uvicorn
+pyyaml
