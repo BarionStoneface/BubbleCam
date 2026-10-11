@@ -21,7 +21,13 @@ Quiet speed, movement speed, ease time and what triggers the slowdown (pleco zon
 
 **Lights.** A sudden brightness jump (the tank light switching) resets the motion detector and pauses events for 20 seconds, so you don't get a flood of false events.
 
-**Activity.** A 24 hour chart, plus a table per night: how many minutes he spent moving, when he first came out, when he was last seen, and how many visits.
+**Is he home?** Draw one Home box tight over the cave mouth, then teach it from the Live tab: tap "He's home" when he's in and "Cave empty" when he's out, a few times each, with the tank light on and off. It compares the cave mouth to those examples every 2 seconds and shows "In his cave" or "Out and about", with how long for.
+
+**Fed now.** Tap it when you feed. The Activity tab then shows how long he took to come out after each feeding.
+
+**Phone notifications** through the free ntfy app: a morning summary ("Out 3 times, 1 h 10 min total, first seen 23:14"), a "He's out" alert with a picture (at most once an hour), and optionally bursts. Switch them on in the Setup tab, which also shows the topic to subscribe to in the app.
+
+**Activity.** A 24 hour chart of movement, time out of the cave and feedings, plus a table per night: time out of the cave, minutes moving, first and last sighting, and number of visits.
 
 ## Hardware notes
 
@@ -31,75 +37,39 @@ Quiet speed, movement speed, ease time and what triggers the slowdown (pleco zon
 
 ## Install on the Pi
 
-Raspberry Pi OS Bookworm, 64 bit.
+Open a terminal on the Pi (the black square icon at the top of the screen) and paste this one line:
 
 ```sh
-sudo apt update
-sudo apt install -y git ffmpeg v4l-utils python3-venv python3-opencv python3-numpy
-git clone https://github.com/BarionStoneface/BubbleCam.git ~/BubbleCam
-cd ~/BubbleCam
-python3 -m venv --system-site-packages .venv
-.venv/bin/pip install fastapi uvicorn pyyaml
-cp config.example.yaml config.yaml
+sudo apt install -y gh && gh auth login -h github.com -p https -w && gh repo clone BarionStoneface/BubbleCam ~/BubbleCam && ~/BubbleCam/deploy/install.sh
 ```
 
-### USB stick for footage
+Because the project is private on GitHub, the first part signs the Pi in: it shows a short code and opens GitHub, and you type the code there. After that, the installer:
 
-Format it as ext4 (this erases it; check the device name with `lsblk` first):
+* installs everything it needs
+* finds the camera
+* offers to set up the USB stick for footage (it asks first, and you have to type ERASE)
+* starts BubbleCam and makes it start on every boot
+* offers to set up Tailscale for your phone
+* offers to show the live view on the monitor at startup
+
+At the end it prints the address to open on your phone. To update later, run `~/BubbleCam/deploy/install.sh` again.
+
+Useful afterwards:
 
 ```sh
-lsblk
-sudo mkfs.ext4 -L bubblecam /dev/sda1
-sudo mkdir -p /mnt/bubblecam
-echo 'LABEL=bubblecam /mnt/bubblecam ext4 defaults,noatime,nofail 0 2' | sudo tee -a /etc/fstab
-sudo mount -a
-sudo mkdir -p /mnt/bubblecam/data && sudo chown $USER /mnt/bubblecam/data
+journalctl -u bubblecam -f         # watch the app's log
+sudo systemctl restart bubblecam   # restart after editing config.yaml
+v4l2-ctl -d /dev/video0 -l         # camera controls, for tuning exposure and gain in config.yaml
 ```
 
-At the default bitrate, real time footage takes about 16 GB a day, so a 64 GB stick holds about 3 days and a 128 GB stick about a week.
-
-### Try it
-
-```sh
-.venv/bin/python -m bubblecam --config config.yaml              # real camera
-.venv/bin/python -m bubblecam --config config.yaml --synthetic  # fake tank, no camera needed
-```
-
-Check the camera's exposure controls and their ranges with `v4l2-ctl -d /dev/video0 -l`, then tune `exposure` and `gain` in `config.yaml`.
-
-### Run at boot
-
-Edit `deploy/bubblecam.service` if your username isn't `pi`, then:
-
-```sh
-sudo cp deploy/bubblecam.service /etc/systemd/system/
-sudo systemctl enable --now bubblecam
-journalctl -u bubblecam -f    # logs
-```
-
-### Phone access through Tailscale
-
-```sh
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-sudo tailscale serve --bg 8080
-```
-
-`tailscale serve` prints an https address like `https://raspberrypi.your-tailnet.ts.net`. Open it on your phone (with Tailscale running on the phone) and use "Add to Home Screen" so it opens like an app. Only devices on your own tailnet can reach it.
-
-### Monitor on the Pi
-
-On Raspberry Pi OS desktop, add the kiosk script to autostart:
-
-```sh
-echo "$HOME/BubbleCam/deploy/kiosk.sh &" >> ~/.config/labwc/autostart
-```
+At the default quality, real time footage takes about 16 GB a day: a 64 GB stick holds about 3 days, 128 GB about a week. Starred events are never deleted.
 
 ## First night checklist
 
-1. Open the Zones tab, draw a **Watch** box around his cave (and any spot he likes), and **Ignore** boxes over the bubbles and filter outflow. Save.
-2. Watch the Live tab with boxes on: green boxes are what the detector sees moving. If sensor grain makes green speckles in the dark, raise `diff_threshold`. If shrimp set off the pleco zone, raise `min_blob_area`.
-3. In the morning, check Events, and the timelapse that rendered at 09:00.
+1. Open the Setup tab. Draw a **Watch** box around his cave (and any spot he likes), a **Home** box tight over the cave mouth, and **Ignore** boxes over the bubbles and filter outflow. Save.
+2. On the Live tab, tap **He's home** or **Cave empty** whenever you can see which it is. A few of each is enough to start.
+3. Watch the Live tab with boxes on: green boxes are what the detector sees moving. If sensor grain makes green speckles in the dark, raise `diff_threshold`. If shrimp set off the pleco zone, raise `min_blob_area`.
+4. In the morning, check Events, and the timelapse that rendered at 09:00.
 
 ## Development
 
@@ -108,4 +78,4 @@ pip install -r requirements.txt pytest
 pytest
 ```
 
-Layout: `camera.py` (sources), `detector.py` (motion), `events.py` (pleco and burst events), `recorder.py` (real time segments and the per second side stream), `timelapse.py` (speed curve and rendering), `media.py` (reading frames back, cutting clips), `core.py` (wiring), `web/` (API and the single page UI).
+Layout: `camera.py` (sources), `detector.py` (motion), `events.py` (pleco and burst events), `presence.py` (in or out of the cave), `summary.py` (per night numbers), `notify.py` (phone notifications), `recorder.py` (real time segments and the per second side stream), `timelapse.py` (speed curve and rendering), `media.py` (reading frames back, cutting clips), `core.py` (wiring), `web/` (API and the single page UI).

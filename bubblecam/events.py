@@ -92,6 +92,8 @@ class EventManager:
         self.burst = Hysteresis(burst_cfg.start_seconds, burst_cfg.end_seconds)
         self.baseline = Baseline(burst_cfg.baseline_minutes)
         self.open_ids: dict[str, int] = {}
+        # Called as fn(kind, zone, ts) when an event starts.
+        self.listeners: list = []
 
     def update(self, scores: Scores, ts: float, frame: np.ndarray) -> None:
         for name, value in scores.zones.items():
@@ -114,9 +116,15 @@ class EventManager:
         if change == "start":
             self.open_ids[key] = self.db.open_event(kind, zone, tr.candidate_since - pre)
             log.info("event start: %s", key)
+            for fn in self.listeners:
+                try:
+                    fn(kind, zone, tr.candidate_since)
+                except Exception:
+                    log.exception("event listener failed")
         elif change == "end":
             ev_id = self.open_ids.pop(key, None)
             if ev_id is None:
+                tr._reset()
                 return
             thumb = None
             if tr.peak_frame is not None:

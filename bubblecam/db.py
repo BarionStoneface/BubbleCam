@@ -38,6 +38,16 @@ CREATE TABLE IF NOT EXISTS activity (
     zone_moving_s REAL            -- seconds in this minute the watch zones were above threshold
 );
 
+CREATE TABLE IF NOT EXISTS presence (
+    ts REAL PRIMARY KEY,
+    state TEXT NOT NULL           -- 'home' or 'away'
+);
+
+CREATE TABLE IF NOT EXISTS feedings (
+    id INTEGER PRIMARY KEY,
+    ts REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS timelapses (
     id INTEGER PRIMARY KEY,
     path TEXT,

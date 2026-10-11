@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import shutil
 import time
-from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -16,6 +15,7 @@ from pydantic import BaseModel
 
 from ..core import App, encode_view
 from ..media import extract_clip
+from ..summary import feedings, recent_nights
 from ..timelapse import TimelapseParams
 
 STATIC = Path(__file__).parent / "static"
@@ -97,6 +97,7 @@ def create_app(core: App) -> FastAPI:
             "disk_total_gb": round(disk.total / 1e9, 1),
             "oldest_recording": oldest["t"] if oldest else None,
             "open_events": [k for k in core.events.open_ids],
+            "presence": core.presence.status(),
         }
 
     # Zones
@@ -183,23 +184,71 @@ def create_app(core: App) -> FastAPI:
 
     @api.get("/api/nights")
     def nights(days: int = 14):
-        """Per night summary. A night is grouped by the date it started (noon to noon)."""
-        since = time.time() - days * 86400
-        rows = db.query("SELECT minute_ts, zone_moving_s FROM activity WHERE minute_ts >= ?", (since,))
-        out: dict[str, dict] = {}
-        for r in rows:
-            day = datetime.fromtimestamp(r["minute_ts"] - 12 * 3600).strftime("%Y-%m-%d")
-            n = out.setdefault(day, {"night": day, "moving_minutes": 0.0, "first": None, "last": None,
-                                     "events": 0})
-            n["moving_minutes"] += (r["zone_moving_s"] or 0) / 60
-            if (r["zone_moving_s"] or 0) >= 5:
-                n["first"] = r["minute_ts"] if n["first"] is None else min(n["first"], r["minute_ts"])
-                n["last"] = r["minute_ts"] if n["last"] is None else max(n["last"], r["minute_ts"])
-        for ev in db.query("SELECT start_ts FROM events WHERE kind='zone' AND start_ts >= ?", (since,)):
-            day = datetime.fromtimestamp(ev["start_ts"] - 12 * 3600).strftime("%Y-%m-%d")
-            if day in out:
-                out[day]["events"] += 1
-        return sorted(out.values(), key=lambda n: n["night"], reverse=True)
+        t = cfg.timelapse
+        return recent_nights(db, days, t.night_start, t.night_end)
+
+    # Is he home?
+
+    @api.get("/api/presence")
+    def presence():
+        return core.presence.status()
+
+    @api.post("/api/presence/sample")
+    def presence_sample(label: str):
+        if core.latest is None:
+            raise HTTPException(503, "no frame yet")
+        try:
+            core.presence.add_sample(core.latest, label)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return core.presence.status()
+
+    @api.delete("/api/presence/samples")
+    def presence_clear():
+        core.presence.clear()
+        return core.presence.status()
+
+    @api.get("/api/presence/history")
+    def presence_history(hours: float = 24):
+        since = time.time() - hours * 3600
+        before = db.one("SELECT ts, state FROM presence WHERE ts < ? ORDER BY ts DESC LIMIT 1", (since,))
+        rows = db.query("SELECT ts, state FROM presence WHERE ts >= ? ORDER BY ts", (since,))
+        return ([before] if before else []) + rows
+
+    # Feedings
+
+    @api.post("/api/feedings")
+    def fed_now():
+        return {"id": db.execute("INSERT INTO feedings(ts) VALUES (?)", (time.time(),)).lastrowid}
+
+    @api.get("/api/feedings")
+    def get_feedings(days: int = 14):
+        return feedings(db, days)
+
+    @api.delete("/api/feedings/{fid}")
+    def delete_feeding(fid: int):
+        db.execute("DELETE FROM feedings WHERE id=?", (fid,))
+        return {"ok": True}
+
+    # Notifications
+
+    @api.get("/api/notify")
+    def notify_settings():
+        return core.notifier.settings()
+
+    @api.put("/api/notify")
+    def notify_update(changes: dict):
+        return core.notifier.update(changes)
+
+    @api.post("/api/notify/test")
+    def notify_test():
+        core.notifier.test()
+        return {"ok": True}
+
+    @api.post("/api/notify/morning")
+    def notify_morning():
+        core.notifier.morning_summary(force=True)
+        return {"ok": True}
 
     # Timelapses
 

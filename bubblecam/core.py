@@ -16,6 +16,8 @@ from .config import Config, load_zones, save_zones
 from .db import DB
 from .detector import Detector, Scores
 from .events import EventManager
+from .notify import Notifier
+from .presence import Presence
 from .recorder import Recorder, segment_files
 from .timelapse import TimelapseWorker
 
@@ -72,6 +74,11 @@ class App:
                          if cfg.record.enabled else None)
         self.timelapses = TimelapseWorker(self.db, cfg)
         self.stats = MinuteStats(self.db, cfg.zone_events.threshold)
+        self.presence = Presence(cfg.presence, self.db, self.data)
+        self.presence.set_zones(self.zones)
+        self.notifier = Notifier(cfg, self.db, self.data, lambda: self.latest)
+        self.presence.listeners.append(self._on_presence)
+        self.events.listeners.append(self._on_event)
 
         self.lock = threading.Lock()
         self.latest: np.ndarray | None = None
@@ -88,6 +95,20 @@ class App:
         self.zones = load_zones(self.data)
         with self.lock:
             self.detector.set_zones(self.zones)
+        self.presence.set_zones(self.zones)
+
+    # Notifications
+
+    def _on_presence(self, state: str, ts: float) -> None:
+        if state == "away":
+            self.notifier.he_is_out(ts)
+
+    def _on_event(self, kind: str, zone: str | None, ts: float) -> None:
+        if kind == "burst":
+            self.notifier.burst(ts)
+        elif self.presence.status()["state"] == "unknown":
+            # No cave detection set up: a pleco zone event is the best "he's out" signal we have.
+            self.notifier.he_is_out(ts)
 
     # Main loop
 
@@ -116,6 +137,7 @@ class App:
                     with self.lock:
                         scores = self.detector.analyze(frame, ts)
                     self.events.update(scores, ts, frame)
+                    self.presence.update(frame, ts, scores.settling)
                 n += 1
                 self.stats.add(ts, scores.zone, scores.tank)
                 if self.recorder:
@@ -180,7 +202,7 @@ def encode_view(frame: np.ndarray, scores: Scores, zones: list[dict], width: int
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         h, w = img.shape[:2]
         for z in zones:
-            color = (80, 200, 255) if z["kind"] == "watch" else (90, 90, 90)
+            color = {"watch": (192, 208, 95), "home": (90, 180, 240)}.get(z["kind"], (90, 90, 90))
             p0 = (int(z["x"] * w), int(z["y"] * h))
             p1 = (int((z["x"] + z["w"]) * w), int((z["y"] + z["h"]) * h))
             cv2.rectangle(img, p0, p1, color, 2)

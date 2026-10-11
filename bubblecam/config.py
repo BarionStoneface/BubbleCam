@@ -97,6 +97,31 @@ class TimelapseConfig:
 
 
 @dataclass
+class PresenceConfig:
+    # How often to check whether he's in the cave.
+    interval_seconds: float = 2.0
+    # Out of the last this many checks, this many must agree before the state flips.
+    window: int = 5
+    agree: int = 4
+
+
+@dataclass
+class NotifyConfig:
+    # Push notifications through ntfy (free phone app). Turned on and off in the app;
+    # this is only the starting value.
+    enabled: bool = False
+    server: str = "https://ntfy.sh"
+    # Empty = a long random topic is generated on first run and shown in the app.
+    topic: str = ""
+    morning_at: str = "09:05"
+    # Link opened when you tap a notification, e.g. your Tailscale address.
+    public_url: str = ""
+    on_emerge: bool = True
+    emerge_cooldown_minutes: float = 60.0
+    on_burst: bool = False
+
+
+@dataclass
 class StorageConfig:
     data_dir: str = "data"
     # Delete oldest recordings when free space drops below this.
@@ -119,6 +144,8 @@ class Config:
     zone_events: ZoneEventConfig = field(default_factory=ZoneEventConfig)
     burst_events: BurstEventConfig = field(default_factory=BurstEventConfig)
     timelapse: TimelapseConfig = field(default_factory=TimelapseConfig)
+    presence: PresenceConfig = field(default_factory=PresenceConfig)
+    notify: NotifyConfig = field(default_factory=NotifyConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     web: WebConfig = field(default_factory=WebConfig)
 
@@ -149,8 +176,9 @@ def load_config(path: str | Path | None) -> Config:
 # Zones are edited from the web UI, so they live in their own file in the data dir
 # rather than in the hand-edited config.
 #
-# Each zone: {"name": str, "kind": "watch" | "ignore", "x": float, "y": float, "w": float, "h": float}
-# with coordinates as fractions of the frame (0 to 1), so they survive resolution changes.
+# Each zone: {"name": str, "kind": "watch" | "ignore" | "home", "x": float, "y": float, "w": float, "h": float}
+# A "home" zone is the cave mouth, used to tell whether he's in or out.
+# Coordinates are fractions of the frame (0 to 1), so they survive resolution changes.
 
 def load_zones(data_dir: Path) -> list[dict]:
     p = data_dir / "zones.json"
@@ -163,8 +191,10 @@ def save_zones(data_dir: Path, zones: list[dict]) -> None:
     clean = []
     for z in zones:
         kind = z.get("kind", "watch")
-        if kind not in ("watch", "ignore"):
+        if kind not in ("watch", "ignore", "home"):
             raise ValueError(f"bad zone kind: {kind}")
+        if kind == "home" and any(c["kind"] == "home" for c in clean):
+            raise ValueError("only one home zone (the cave mouth) is allowed")
         x, y = float(z["x"]), float(z["y"])
         w, h = float(z["w"]), float(z["h"])
         x, y = min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0)
