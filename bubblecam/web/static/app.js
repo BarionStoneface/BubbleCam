@@ -57,6 +57,7 @@ async function route() {
   const [name, arg] = (location.hash.slice(1) || (document.body.classList.contains('kiosk') ? 'tank/live' : 'tanks')).split('/');
   if (page && page.leave) page.leave();
   page = null;
+  if ($('#sheet').open) $('#sheet').close();
   stopStreams();
   view.innerHTML = '';
   $$('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === name || (name === 'tank' && a.dataset.tab === 'tanks')));
@@ -78,7 +79,8 @@ async function pollStatus() {
     const h = status.health;
     const btn = $('#health');
     btn.className = 'health ' + h.level;
-    btn.querySelector('span').textContent = h.level === 'ok' ? 'All good' : h.items.length === 1 ? 'Needs a look' : `${h.items.length} things`;
+    btn.querySelector('span').textContent = h.level === 'ok' ? 'All good' : h.level === 'danger' ? 'Alert'
+      : h.items.length === 1 ? 'Needs a look' : `${h.items.length} things`;
     if (page && page.onStatus) page.onStatus(status);
   } catch (e) {
     $('#health').className = 'health problem';
@@ -89,7 +91,7 @@ setInterval(() => { if (!document.hidden) pollStatus(); }, 3000);
 
 $('#health').onclick = () => {
   const h = status && status.health;
-  const items = h && h.items.length ? h.items.map(i => `<div class="list-row"><div class="grow"><b>${esc(i.message)}</b>
+  const items = h && h.items.length ? h.items.map(i => `<div class="list-row"><span class="sev ${i.severity}"></span><div class="grow"><b>${esc(i.message)}</b>
       <div class="dim">Since ${dayTime(i.since)}</div></div></div>`).join('') : '<p>Everything is working: the camera is sending pictures, recording is running and there\'s room on the disk.</p>';
   const checkin = h && h.checkin === false ? '<p class="dim">The outside check in ping is failing.</p>' : '';
   openSheet(`<h3 style="margin-bottom:8px">System status</h3>${items}${checkin}`);
@@ -230,10 +232,20 @@ async function pageTank(arg) {
   const liveImg = $('img', liveBox);
   const boxesBtn = $('.chip', liveBox);
   const spots = el('<div class="spots"></div>');
+  const bubbles = el('<div class="card spot" hidden><span class="dot"></span><span class="grow"><b>Filter bubbles</b><div class="dim"></div></span></div>');
   const buttons = el(`<div class="big-buttons"><button class="btn" id="fed">🍤 Fed them</button><button class="btn" id="maint">🧽 Doing maintenance</button></div>`);
   const night = el('<div class="card" style="display:grid;gap:12px"><h3>Last night</h3><div class="dim">Loading…</div></div>');
   const day = el('<div class="card" style="display:grid;gap:12px"></div>');
-  view.append(liveBox, spots, buttons, night, day);
+  view.append(liveBox, spots, bubbles, buttons, night, day);
+  const BUBBLE_WORDS = { running: ['home', 'Running'], learning: ['', 'Learning what normal looks like'],
+    stopped: ['stopped', 'Stopped'], off: ['', 'Not watched. Switch on in Setup'], 'not in view': ['', 'Not in view right now'] };
+  function drawBubbles(state) {
+    bubbles.hidden = !state || state === 'no box';
+    if (bubbles.hidden) return;
+    const [cls, text] = BUBBLE_WORDS[state] || ['', state];
+    $('.dot', bubbles).className = 'dot ' + cls;
+    $('.dim', bubbles).textContent = text;
+  }
 
   function setStream() {
     if (tank.live) {
@@ -340,6 +352,7 @@ async function pageTank(arg) {
       tank.live = st.tank && st.tank.id === tank.id;
       if (tank.live !== wasLive) setStream();
       if (tank.live) drawSpots(st.spotlights);
+      drawBubbles(tank.live ? st.bubbles : null);
       drawMaint(tank.live ? st.maintenance_until : tank.maintenance_until);
     },
   };
@@ -847,7 +860,7 @@ async function pageSetup() {
       <div class="row" style="margin-top:12px"><input type="text" id="newname" placeholder="Name, e.g. Pleco" class="grow" maxlength="30">
         <button class="btn primary" id="add">Add</button></div>
       <div class="row" style="margin-top:14px"><a class="btn" href="#draw/${t.id}">✏️ Draw boxes</a>
-        <span class="dim">Where each animal hangs out, its home, and areas to ignore like bubbles.</span></div></div>`);
+        <span class="dim">Where each animal hangs out, its home, areas to ignore, and the filter bubbles.</span></div></div>`);
     const layout = await api(`/api/tanks/${t.id}/layout`);
     for (const s of layout.spotlights) {
       const live_s = st.spotlights.find(x => x.id === s.id) || {};
@@ -868,6 +881,18 @@ async function pageSetup() {
       $('#slist', spotCard).append(row);
     }
     if (!layout.spotlights.length) $('#slist', spotCard).append(el('<div class="dim">No one yet.</div>'));
+    const hasBox = !!layout.settings.bubbles;
+    const bub = el(`<div style="margin-top:16px"><h3>Filter bubbles</h3>
+      <p class="dim" style="margin:6px 0 4px">If a sponge filter is the tank's only filtration, BubbleCam can watch its bubbles and tell you
+      straight away if they stop, even with notifications set to quiet. It holds off during maintenance.</p>
+      <div class="toggle"><span>Tell me if the filter bubbles stop${hasBox ? '' : ' <span class="dim">(draw a box over the bubble stream first, in Draw boxes)</span>'}</span>
+      <input type="checkbox" id="bubalert" ${hasBox ? '' : 'disabled'}></div></div>`);
+    $('#bubalert', bub).checked = !!layout.settings.bubble_alert;
+    $('#bubalert', bub).onchange = e => attempt(async () => {
+      await send(`/api/tanks/${t.id}`, 'PATCH', { settings: { bubble_alert: e.target.checked } });
+      flash(e.target.checked ? 'Watching the bubbles' : 'Bubble watch off');
+    });
+    spotCard.append(bub);
     $('#add', spotCard).onclick = () => attempt(async () => {
       const name = $('#newname', spotCard).value.trim();
       if (!name) return flash('Give it a name first');
@@ -886,6 +911,7 @@ async function pageSetup() {
     <div style="margin-top:10px">
       <div class="toggle"><span>Notifications on</span><input type="checkbox" data-k="enabled"></div>
       <div class="toggle"><span>Morning summary <span class="dim">(${esc(n.morning_at)})</span></span><input type="checkbox" data-k="morning"></div>
+      <div class="toggle"><span>Danger in a tank, like filter bubbles stopping</span><input type="checkbox" data-k="danger"></div>
       <div class="toggle"><span>If BubbleCam itself stops working</span><input type="checkbox" data-k="system"></div>
       <div class="toggle"><span>When a spotlighted animal comes out <span class="dim">(at most once an hour each)</span></span><input type="checkbox" data-k="on_emerge"></div>
       <div class="toggle"><span>Bursts of activity</span><input type="checkbox" data-k="on_burst"></div>
@@ -929,6 +955,8 @@ async function pageDraw(arg) {
   }
   modes.push({ key: 'ignore', label: 'Ignore: bubbles, filter flow, swaying plants', color: '--dim',
     get: () => layout.settings.ignore, set: v => { layout.settings.ignore = v; } });
+  modes.push({ key: 'bubbles', label: 'Filter bubbles: one box over the bubble stream', color: '--air', single: true,
+    get: () => layout.settings.bubbles ? [layout.settings.bubbles] : [], set: v => { layout.settings.bubbles = v[0] || null; } });
   let mode = modes[0];
   let selected = -1;
 
@@ -987,6 +1015,7 @@ async function pageDraw(arg) {
   $('#save', card).onclick = () => attempt(async () => {
     await send(`/api/tanks/${tankId}/layout`, 'PUT', {
       ignore: layout.settings.ignore,
+      bubbles: layout.settings.bubbles,
       spotlights: layout.spotlights.map(s => ({ id: s.id, areas: s.areas, home: s.home })),
     });
     flash('Saved');

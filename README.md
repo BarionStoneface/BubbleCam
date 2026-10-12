@@ -37,6 +37,11 @@ The app lives entirely on the Pi. Phones and tablets just open a page the Pi ser
 
 **Storage that keeps the good bits.** Raw footage is recorded continuously and the oldest goes first when space runs low. Each moment is cut into its own small file when it ends and kept 30 days; timelapses are kept 90 days. Anything starred or tagged is kept for good.
 
+**Danger watches.** The app reports and never advises, with one exception: something genuinely dangerous. Then it says what it saw and, in one line, what that can mean. Never what to do.
+
+* **Filter bubbles stopped.** Draw one box over a sponge filter's bubble stream (Draw boxes) and switch on "Tell me if the filter bubbles stop" in Setup. It learns what the running stream looks like under each lighting level, judges on the middle of the last 30 seconds so fish swimming through don't fool it, and alerts after 3 minutes of near stillness, even with notifications set to quiet. It holds off during maintenance, light switches, camera moves, and when the picture itself is frozen or black. If the camera is on another tank, the status dot says the bubbles aren't being watched.
+* **Fish crowding the surface** for 30 minutes, not after feeding ("That can mean low oxygen"), and **a tank much stiller than usual** for a daytime hour, compared with the same hours on previous days ("That can mean a heater or oxygen problem"). These two show on the status dot and in the morning summary but don't send alerts until they've been tuned on real footage.
+
 **Quiet by design.** Phone notifications (through the free ntfy app) default to one morning summary a day, plus one message if BubbleCam itself breaks: camera not sending pictures, picture frozen or black, recording stopped, USB stick missing, storage full. Each problem has to persist before it counts, and won't repeat within 6 hours. "An animal came out" and burst messages exist but are off unless you turn them on.
 
 **Staying up.** The app checks in with the Pi's service manager every 10 seconds and gets restarted if it stops making progress. The Pi's hardware watchdog reboots it if the whole system freezes. For the case where the Pi dies outright, paste a free Healthchecks.io ping address into Setup: the Pi pings it every few minutes while all is well, and that service tells you when the pings stop.
@@ -106,9 +111,10 @@ Layout:
 * `timelapse.py`: speed curve and rendering
 * `storage.py`: cutting moments and cleaning up
 * `health.py`: system checks and watchdogs
+* `danger.py`: filter bubbles, surface crowding, daytime stillness
 * `summary.py`: nights and trends
 * `notify.py`: phone notifications
 * `core.py`: wiring
 * `web/`: the API and the screens, with all styling in the tokens at the top of `web/static/style.css`
 
-With `--synthetic`, setting `BUBBLECAM_SYNTH_CTRL` to a file containing `seed dx dy [feed]` lets you switch the fake camera to another tank, shift it, or set off a feeding rush while the app runs.
+With `--synthetic`, setting `BUBBLECAM_SYNTH_CTRL` to a file containing `seed dx dy [feed] [nobubbles]` lets you switch the fake camera to another tank, shift it, set off a feeding rush, or stop the filter bubbles while the app runs.

@@ -98,7 +98,7 @@ def morning_text(tanks: list[dict], problems: list[dict]) -> tuple[str, str, str
             bits.append(f"Watched for {t['watched_hours']:.0f} h")
         lines.append(prefix + ". ".join(bits) + ".")
     for p in problems:
-        if p["severity"] == "problem":
+        if p["severity"] in ("problem", "danger") or p["kind"].split(":")[0] in ("surface", "still"):
             when = clock(p["start_ts"]) + (f" to {clock(p['end_ts'])}" if p["end_ts"] else ", still going")
             lines.append(f"{p['message']} ({when}).")
     if not watched:

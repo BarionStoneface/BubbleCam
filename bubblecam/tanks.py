@@ -29,6 +29,8 @@ DEFAULT_SETTINGS = {
     "spot_sensitivity": 3,
     "burst_sensitivity": 3,
     "feeding_detection": True,
+    "bubbles": None,          # box over a filter's bubble stream
+    "bubble_alert": False,    # alert if those bubbles stop
 }
 
 IDENTITY = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
@@ -110,6 +112,8 @@ class Tank:
     def to_dict(self, A: np.ndarray = IDENTITY) -> dict:
         settings = {**DEFAULT_SETTINGS, **self.settings}
         settings["ignore"] = [transform_rect(r, A) for r in settings["ignore"]]
+        if settings["bubbles"]:
+            settings["bubbles"] = transform_rect(settings["bubbles"], A)
         return {"id": self.id, "name": self.name, "settings": settings,
                 "spotlights": [s.to_dict(A) for s in self.spotlights]}
 
@@ -178,6 +182,10 @@ class TankStore:
                     value = bool(value)
                 elif key == "ignore":
                     value = [r for r in (clean_rect(x) for x in value) if r]
+                elif key == "bubbles":
+                    value = clean_rect(value) if value else None
+                elif key == "bubble_alert":
+                    value = bool(value)
                 settings[key] = value
             self.db.execute("UPDATE tanks SET settings=? WHERE id=?", (json.dumps(settings), tank_id))
         self.reload()

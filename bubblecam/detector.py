@@ -5,6 +5,7 @@ Per frame it produces:
   zone      - the highest of those
   tank      - fraction of the whole (non ignored) picture covered by moving blobs
   top_share - how much of the movement is in the top quarter of the picture (fish rushing up to food)
+  bubbles   - how much of the filter bubble box changed since the previous frame (None without a box)
   boxes     - moving blobs, for drawing on the live view
 """
 
@@ -29,6 +30,7 @@ class Scores:
     top_share: float = 0.0
     spots: dict[int, float] = field(default_factory=dict)
     boxes: list[tuple[float, float, float, float]] = field(default_factory=list)  # fractions of frame
+    bubbles: float | None = None
     brightness: float = 0.0
     light_change: bool = False
     disturbed: bool = False
@@ -41,6 +43,7 @@ class Detector:
         self.w = cfg.analysis_width
         self.h = max(1, round(frame_h * self.w / frame_w))
         self.bg: np.ndarray | None = None
+        self.prev: np.ndarray | None = None
         self.brightness: float | None = None
         self.settle_until = 0.0
         self.kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -55,8 +58,10 @@ class Detector:
         x1, y1 = int((z["x"] + z["w"]) * w), int((z["y"] + z["h"]) * h)
         return x0, y0, max(x1, x0 + 1), max(y1, y0 + 1)
 
-    def set_layout(self, spots: dict[int, list[dict]], ignore: list[dict]) -> None:
-        """spots: spotlight id -> its areas; ignore: areas to cut out. Both in current view coordinates."""
+    def set_layout(self, spots: dict[int, list[dict]], ignore: list[dict], bubbles: dict | None = None) -> None:
+        """spots: spotlight id -> its areas; ignore: areas to cut out; bubbles: the filter bubble box.
+        All in current view coordinates."""
+        self.bubble_box = self._rect(bubbles) if bubbles else None
         valid = np.ones((self.h, self.w), np.uint8)
         for z in ignore:
             x0, y0, x1, y1 = self._rect(z)
@@ -87,6 +92,15 @@ class Detector:
         mean = float(smallf.mean())
 
         scores = Scores(spots={spot_id: 0.0 for spot_id, _, _ in watch}, brightness=mean)
+
+        # Bubbles: plain frame to frame change inside the box. A running bubble stream never holds still;
+        # the background model would slowly learn a constant stream as "normal", frame differences don't.
+        box = self.bubble_box
+        if box is not None and self.prev is not None:
+            x0, y0, x1, y1 = box
+            d = cv2.absdiff(smallf[y0:y1, x0:x1], self.prev[y0:y1, x0:x1])
+            scores.bubbles = float((d > cfg.diff_threshold).mean()) if d.size else 0.0
+        self.prev = smallf
 
         light_change = self.brightness is not None and abs(mean - self.brightness) > cfg.light_jump
         self.brightness = mean if self.brightness is None else 0.9 * self.brightness + 0.1 * mean

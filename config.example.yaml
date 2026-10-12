@@ -36,6 +36,12 @@ burst_events:
 feeding:
   top_share: 0.55         # feeding = a burst with most of the movement in the top quarter of the picture
 
+danger:
+  bubble_stop_seconds: 180   # bubbles near still this long = alert (switch on per tank in Setup)
+  surface_minutes: 30        # fish crowding the surface this long (not after feeding) = note
+  day_start: "10:00"         # daytime stillness is only checked between these times
+  day_end: "18:00"
+
 timelapse:
   max_speed: 300          # quiet stretches
   min_speed: 2            # while he's moving (1 = real time)

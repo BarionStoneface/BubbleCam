@@ -13,6 +13,7 @@
   --warm: #f0b45a;          /* home / out of the cave */
   --feed: #8fd46a;          /* feeding */
   --burst: #e9876b;         /* bursts of activity */
+  --air: #7fb4f0;           /* filter bubbles */
   --bad: #e46a6a;
   --ok: #57c78b;
   --shade: rgba(0, 0, 0, .35);
@@ -32,7 +33,7 @@
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     --bg: #eef3f3; --surface: #ffffff; --surface-2: #f3f7f7; --line: #d5e0e1; --text: #11201f; --dim: #5a6e72;
-    --accent: #138f80; --accent-ink: #ffffff; --warm: #b8741a; --feed: #4a8f2c; --burst: #c45a3c; --bad: #c43c3c;
+    --accent: #138f80; --accent-ink: #ffffff; --warm: #b8741a; --feed: #4a8f2c; --burst: #c45a3c; --bad: #c43c3c; --air: #2f6fb8;
     --ok: #2f8a5a; --shade: rgba(0, 0, 0, .08); color-scheme: light;
   }
 }
@@ -61,6 +62,12 @@ h3 { font-size: var(--text-lg); }
           border-radius: 999px; padding: 5px 11px; cursor: pointer; font-size: var(--text-sm); }
 .health i { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); }
 .health.note i { background: var(--warm); } .health.problem i { background: var(--bad); }
+.health.danger { border-color: var(--bad); color: var(--bad); font-weight: 600; }
+.health.danger i { background: var(--bad); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .health.danger i { animation: none; } }
+.sev { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--warm); }
+.sev.problem, .sev.danger { background: var(--bad); }
 .gear { background: none; border: 0; font-size: 21px; cursor: pointer; padding: 2px 4px; }
 
 /* Bottom navigation */
@@ -120,6 +127,7 @@ label.field { display: grid; gap: 5px; font-size: var(--text-sm); color: var(--d
 .spot { display: flex; gap: 10px; align-items: center; text-align: left; cursor: pointer; padding: 12px 14px; color: inherit; }
 .spot .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--dim); flex: none; }
 .spot .dot.home { background: var(--accent); } .spot .dot.away, .spot .dot.moving { background: var(--warm); }
+.spot .dot.stopped { background: var(--bad); } .spot:has(.dot.stopped) { border-color: var(--bad); }
 .big-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .big-buttons .btn { justify-content: center; padding: 14px; font-weight: 600; }
 .moments-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }

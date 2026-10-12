@@ -92,6 +92,21 @@ class FeedingConfig:
 
 
 @dataclass
+class DangerConfig:
+    # Filter bubbles: "stopped" when the bubble box shows less than this share of its usual movement...
+    bubble_ratio: float = 0.35
+    # ...for this long.
+    bubble_stop_seconds: float = 180.0
+    # Surface crowding: most movement in the top quarter of the picture for this long (not after feeding).
+    surface_share: float = 0.6
+    surface_minutes: float = 30.0
+    # Daytime stillness: the last hour much stiller than the same hours on previous days.
+    day_start: str = "10:00"
+    day_end: str = "18:00"
+    still_ratio: float = 0.15
+
+
+@dataclass
 class TimelapseConfig:
     output_fps: int = 30
     # Speed while nothing is happening, and while the pleco is moving (1 = real time).
@@ -130,6 +145,7 @@ class NotifyConfig:
     public_url: str = ""
     morning: bool = True
     system: bool = True
+    danger: bool = True
     on_emerge: bool = False
     emerge_cooldown_minutes: float = 60.0
     on_burst: bool = False
@@ -164,6 +180,7 @@ class Config:
     zone_events: ZoneEventConfig = field(default_factory=ZoneEventConfig)
     burst_events: BurstEventConfig = field(default_factory=BurstEventConfig)
     feeding: FeedingConfig = field(default_factory=FeedingConfig)
+    danger: DangerConfig = field(default_factory=DangerConfig)
     timelapse: TimelapseConfig = field(default_factory=TimelapseConfig)
     presence: PresenceConfig = field(default_factory=PresenceConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)

@@ -42,6 +42,7 @@ class SpotLayout(BaseModel):
 
 class LayoutIn(BaseModel):
     ignore: list[Rect] = []
+    bubbles: Rect | None = None
     spotlights: list[SpotLayout] = []
 
 
@@ -141,6 +142,7 @@ def create_app(core: App) -> FastAPI:
             "view": core.view.status(),
             "tank": {"id": tank.id, "name": tank.name} if tank else None,
             "spotlights": spot_live(tank) if tank else [],
+            "bubbles": core.danger.bubble_status(tank) if tank else None,
             "tank_motion": core.scores.tank,
             "settling": core.scores.settling,
             "maintenance_until": core.maintenance_until(core.tank_id),
@@ -180,7 +182,7 @@ def create_app(core: App) -> FastAPI:
             if body.name is not None:
                 core.tanks.rename(tank_id, body.name)
             if body.settings:
-                settings = {k: v for k, v in body.settings.items() if k != "ignore"}
+                settings = {k: v for k, v in body.settings.items() if k not in ("ignore", "bubbles")}
                 core.tanks.update_settings(tank_id, settings)
         except ValueError as e:
             bad(e)
@@ -224,7 +226,8 @@ def create_app(core: App) -> FastAPI:
             if s.id in known:
                 core.tanks.update_spotlight(s.id, areas=[r.model_dump() for r in s.areas],
                                             home=s.home.model_dump() if s.home else None)
-        core.tanks.update_settings(tank_id, {"ignore": [r.model_dump() for r in body.ignore]})
+        core.tanks.update_settings(tank_id, {"ignore": [r.model_dump() for r in body.ignore],
+                                             "bubbles": body.bubbles.model_dump() if body.bubbles else None})
         return core.layout()
 
     @api.post("/api/tanks/{tank_id}/spotlights")

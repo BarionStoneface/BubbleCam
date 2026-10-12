@@ -122,13 +122,14 @@ class SyntheticTank:
         self.out_from, self.out_to = 40.0, 70.0
         # Feeding: (start, end) times in seconds; the school rushes to the surface and goes wild.
         self.feeds: list[tuple[float, float]] = []
+        self.bubbles_on = True
 
     def frame(self, t: float) -> np.ndarray:
         img = self.bg.copy()
         w, h = self.w, self.h
         # Bubble column: always moving, should be masked with an ignore zone.
         bx = int(w * 0.1)
-        for i in range(8):
+        for i in range(8 if self.bubbles_on else 0):
             by = int((h - ((t * 120 + i * 97) % h)))
             cv2.circle(img, (bx + int(6 * math.sin(t * 3 + i)), by), 5, 200, -1)
         # School of small fast fish, mostly in the upper water column.
@@ -159,8 +160,9 @@ class SyntheticTank:
 
 def _synthetic_frames(cfg: CameraConfig) -> Iterator[tuple[np.ndarray, float]]:
     """For trying things without hardware. If BUBBLECAM_SYNTH_CTRL names a file containing
-    "seed dx dy [feed]", the fake camera switches tank (seed), shifts by dx, dy pixels, and with
-    "feed" puts on a feeding rush: handy for testing tank recognition and feeding detection."""
+    "seed dx dy [feed] [nobubbles]", the fake camera switches tank (seed), shifts by dx, dy pixels,
+    "feed" puts on a feeding rush and "nobubbles" stops the filter: handy for testing tank
+    recognition, feeding detection and the bubble alarm."""
     tanks: dict[int, SyntheticTank] = {}
     ctrl = os.environ.get("BUBBLECAM_SYNTH_CTRL")
     seed, dx, dy = 1, 0, 0
@@ -176,13 +178,15 @@ def _synthetic_frames(cfg: CameraConfig) -> Iterator[tuple[np.ndarray, float]]:
         now = time.time()
         if ctrl and now - last_ctrl > 1:
             last_ctrl = now
+            parts: list[str] = []
             try:
                 parts = open(ctrl).read().split()
                 seed, dx, dy = int(parts[0]), int(parts[1]), int(parts[2])
-                feed = "feed" in parts
             except (OSError, ValueError, IndexError):
-                feed = False
+                pass
+            feed = "feed" in parts
             tank = tanks.setdefault(seed, SyntheticTank(cfg.width, cfg.height, seed=seed))
+            tank.bubbles_on = "nobubbles" not in parts
             t = now - start
             if feed and not any(a <= t < b for a, b in tank.feeds):
                 tank.feeds.append((t, t + 25))

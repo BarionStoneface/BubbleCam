@@ -27,7 +27,7 @@ from .db import DB
 
 log = logging.getLogger(__name__)
 
-TOGGLES = ("enabled", "morning", "system", "on_emerge", "on_burst")
+TOGGLES = ("enabled", "morning", "system", "danger", "on_emerge", "on_burst")
 
 
 def _header(value: str) -> str:
@@ -63,7 +63,7 @@ class Notifier:
         state = json.loads(self.path.read_text()) if self.path.exists() else {}
         n = self.ncfg
         for key in TOGGLES:
-            state.setdefault(key, getattr(n, key))
+            state.setdefault(key, getattr(n, key, True))
         state.setdefault("topic", n.topic or f"bubblecam-{secrets.token_hex(12)}")
         if n.topic:
             state["topic"] = n.topic
@@ -150,6 +150,13 @@ class Notifier:
             return
         self.send(message, f"Since {datetime.fromtimestamp(since).strftime('%H:%M')}.", tags="warning",
                   priority="high")
+
+    def danger_alert(self, message: str, since: float) -> None:
+        """Something dangerous in a tank. Sent whatever the quiet settings, unless danger alerts are off."""
+        if not self.state["danger"]:
+            return
+        self.send(message, f"Since {datetime.fromtimestamp(since).strftime('%H:%M')}.", self._snapshot(),
+                  tags="rotating_light", priority="urgent")
 
     def animal_out(self, spot_id: int, name: str, ts: float) -> None:
         if not self.state["on_emerge"]:

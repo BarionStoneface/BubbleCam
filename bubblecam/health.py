@@ -2,7 +2,8 @@
 
 Each check has to stay true for a while before it counts, so a hiccup never becomes an alert.
 "problem" conditions send one phone message (if system messages are on); "note" conditions only show
-in the app's status dot and the morning summary.
+in the app's status dot and the morning summary. "danger" conditions come from the tank watches in
+danger.py (filter bubbles stopped) and always send a message while notifications are set up.
 
 Two outside safety nets cover what the app can't report itself:
   systemd watchdog  restarts the app if it stops making progress
@@ -27,7 +28,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class Check:
     kind: str
-    severity: str        # "problem" or "note"
+    severity: str        # "danger", "problem" or "note"
     persist: float       # seconds it must stay true
     message: str
 
@@ -103,6 +104,7 @@ class Health:
         while True:
             try:
                 self.check()
+                self.core.danger.periodic(time.time())
                 if self._alive():
                     sd_notify("WATCHDOG=1")
                 self._checkin()
@@ -147,23 +149,37 @@ class Health:
                 if true:
                     self.first_true.setdefault(kind, now)
                     if kind not in self.active and now - self.first_true[kind] >= spec.persist:
-                        self._raise(spec, self.first_true[kind], now)
+                        self._raise(kind, spec.message + self.extra.get(kind, ""), spec.severity,
+                                    self.first_true[kind], now)
                 else:
                     self.first_true.pop(kind, None)
                     if kind in self.active:
                         self._resolve(kind, now)
 
-    def _raise(self, spec: Check, since: float, now: float) -> None:
-        message = spec.message + self.extra.get(spec.kind, "")
+    def set_external(self, kind: str, active: bool, message: str = "", severity: str = "note",
+                     since: float | None = None) -> None:
+        """For watches that do their own timing (danger.py): switch a condition on or off right away."""
+        now = time.time()
+        with self.lock:
+            if active and kind not in self.active:
+                self._raise(kind, message, severity, since or now, now)
+            elif not active and kind in self.active:
+                self._resolve(kind, now)
+
+    def _raise(self, kind: str, message: str, severity: str, since: float, now: float) -> None:
         log_id = self.core.db.execute(
             "INSERT INTO health_log(kind, message, severity, start_ts) VALUES (?,?,?,?)",
-            (spec.kind, message, spec.severity, since)).lastrowid
-        self.active[spec.kind] = {"kind": spec.kind, "message": message, "severity": spec.severity,
-                                  "since": since, "log_id": log_id}
+            (kind, message, severity, since)).lastrowid
+        self.active[kind] = {"kind": kind, "message": message, "severity": severity,
+                             "since": since, "log_id": log_id}
         log.warning("health: %s", message)
-        if spec.severity == "problem" and now - self.last_notified.get(spec.kind, 0) > RENOTIFY_HOURS * 3600:
-            self.last_notified[spec.kind] = now
-            self.core.notifier.system_alert(message, since)
+        quiet_for = (0.5 if severity == "danger" else RENOTIFY_HOURS) * 3600
+        if severity in ("problem", "danger") and now - self.last_notified.get(kind, 0) > quiet_for:
+            self.last_notified[kind] = now
+            if severity == "danger":
+                self.core.notifier.danger_alert(message, since)
+            else:
+                self.core.notifier.system_alert(message, since)
 
     def _resolve(self, kind: str, now: float) -> None:
         item = self.active.pop(kind)
@@ -171,9 +187,10 @@ class Health:
         log.info("health: resolved %s", kind)
 
     def status(self) -> dict:
+        rank = {"danger": 0, "problem": 1, "note": 2}
         with self.lock:
-            items = sorted(self.active.values(), key=lambda i: (i["severity"] != "problem", i["since"]))
-        level = "problem" if any(i["severity"] == "problem" for i in items) else "note" if items else "ok"
+            items = sorted(self.active.values(), key=lambda i: (rank[i["severity"]], i["since"]))
+        level = items[0]["severity"] if items else "ok"
         return {"level": level, "items": [{k: i[k] for k in ("kind", "message", "severity", "since")}
                                           for i in items],
                 "checkin": self.checkin_ok}
@@ -185,7 +202,7 @@ class Health:
         self.last_checkin = time.time()
         # Only ping while the essentials work, so silence means something is wrong.
         if any(i["severity"] == "problem" for i in self.active.values()):
-            return
+            return   # (a tank danger isn't a system fault: keep pinging so silence still means "Pi down")
         try:
             urllib.request.urlopen(url, timeout=15).read()
             self.checkin_ok = True

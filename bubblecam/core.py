@@ -12,6 +12,7 @@ import numpy as np
 
 from .camera import open_source
 from .config import Config
+from .danger import Danger
 from .db import DB
 from .detector import Detector, Scores
 from .events import EventManager
@@ -116,6 +117,7 @@ class App:
         self.view = ViewTracker(self.db, self.data, self._view_frame, self._view_changed)
         self.tank_id, self.A = self.view.state.tank_id, self.view.state.A
         self.health = Health(self)
+        self.danger = Danger(self, cfg.danger)
 
         self.presence.listeners.append(self._on_presence)
         self.events.listeners.append(self._on_event)
@@ -145,7 +147,8 @@ class App:
         else:
             spots = {s.id: [transform_rect(a, A) for a in s.areas] for s in tank.spotlights}
             ignore = [transform_rect(r, A) for r in tank.setting("ignore")]
-            self.detector.set_layout(spots, ignore)
+            bubbles = tank.setting("bubbles")
+            self.detector.set_layout(spots, ignore, transform_rect(bubbles, A) if bubbles else None)
         homes = {s.id: transform_rect(s.home, A) for s in tank.spotlights if s.home} if tank else {}
         self.presence.set_layout(tank, homes)
         if reset_events:
@@ -166,12 +169,13 @@ class App:
             moved = [(s.id, [transform_rect(a, A) for a in s.areas], transform_rect(s.home, A) if s.home else None)
                      for s in tank.spotlights]
             ignore = [transform_rect(r, A) for r in tank.setting("ignore")]
+            bubbles = transform_rect(tank.setting("bubbles"), A) if tank.setting("bubbles") else None
             # From here on, stored boxes are in today's picture coordinates.
             self.A = IDENTITY.copy()
             for spot_id, areas, home in moved:
                 self.presence.stored_home[spot_id] = home
                 self.tanks.update_spotlight(spot_id, areas=areas, home=home)
-            self.tanks.update_settings(tank.id, {"ignore": ignore})
+            self.tanks.update_settings(tank.id, {"ignore": ignore, "bubbles": bubbles})
         self.view.anchor(tank.id, frame)
 
     def new_tank_here(self, name: str):
@@ -337,6 +341,7 @@ class App:
                 if n % max(1, self.cfg.detect.analyze_every) == 0:
                     scores = self.detector.analyze(frame, ts)
                     self.events.update(scores, ts, frame, paused=paused)
+                    self.danger.update(tank, ts, scores)
                     if not paused:
                         self.presence.update(frame, ts, scores.settling)
                 n += 1
@@ -396,6 +401,8 @@ def encode_view(frame: np.ndarray, scores: Scores, layout: dict | None, width: i
         if layout:
             for r in layout["settings"]["ignore"]:
                 box(r, (90, 90, 90), None, 1)
+            if layout["settings"].get("bubbles"):
+                box(layout["settings"]["bubbles"], (240, 170, 90), "bubbles")
             for s in layout["spotlights"]:
                 for a in s["areas"]:
                     box(a, (192, 208, 95), s["name"])
