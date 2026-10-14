@@ -17,6 +17,7 @@ from .db import DB
 from .detector import Detector, Scores
 from .events import EventManager
 from .health import Health
+from .maps import HeatMaps, TrailsWorker
 from .notify import Notifier
 from .presence import PresenceManager
 from .recorder import Recorder
@@ -24,6 +25,7 @@ from .storage import Storage
 from .summary import incidents, morning_text, night_bounds, tank_summary
 from .tanks import IDENTITY, MAX_SPOTLIGHTS, TankStore, transform_rect
 from .timelapse import TimelapseWorker
+from .tracks import Behaviour
 from .viewmatch import ViewTracker
 
 log = logging.getLogger(__name__)
@@ -39,7 +41,10 @@ class MinuteStats:
         self.key: tuple[int, int] | None = None   # (tank id, minute)
         self.tank: list[float] = []
         self.spot_moving: dict[int, float] = {}
+        self.spot_still: dict[int, float] = {}
         self.spot_max: dict[int, float] = {}
+        self.behaviour: dict[int, Behaviour] = {}
+        self.modes: dict[int, str] = {}          # latest 'quiet' / 'still' / 'moving' per animal
         self.maintenance = False
         self.last_ts: float | None = None
 
@@ -57,8 +62,16 @@ class MinuteStats:
         self.tank.append(scores.tank)
         self.maintenance |= maintenance
         for spot_id, v in scores.spots.items():
-            if v >= threshold:
+            active = v >= threshold
+            b = self.behaviour.get(spot_id)
+            if b is None:
+                b = self.behaviour[spot_id] = Behaviour()
+            mode = b.update(ts, active and not maintenance, scores.centroids.get(spot_id))
+            self.modes[spot_id] = mode
+            if active:
                 self.spot_moving[spot_id] = self.spot_moving.get(spot_id, 0.0) + dt
+                if mode == "still":
+                    self.spot_still[spot_id] = self.spot_still.get(spot_id, 0.0) + dt
             self.spot_max[spot_id] = max(self.spot_max.get(spot_id, 0.0), v)
 
     def flush(self) -> None:
@@ -69,10 +82,12 @@ class MinuteStats:
         self.db.execute("INSERT OR REPLACE INTO activity VALUES (?,?,?,?,?)",
                         (tank_id, minute, float(t.mean()), float(t.max()), int(self.maintenance)))
         for spot_id, mx in self.spot_max.items():
-            self.db.execute("INSERT OR REPLACE INTO spot_activity VALUES (?,?,?,?,?)",
-                            (spot_id, minute, tank_id, self.spot_moving.get(spot_id, 0.0), mx))
+            self.db.execute("INSERT OR REPLACE INTO spot_activity VALUES (?,?,?,?,?,?)",
+                            (spot_id, minute, tank_id, self.spot_moving.get(spot_id, 0.0), mx,
+                             self.spot_still.get(spot_id, 0.0)))
         self.tank.clear()
         self.spot_moving.clear()
+        self.spot_still.clear()
         self.spot_max.clear()
         self.maintenance = False
 
@@ -88,7 +103,9 @@ class App:
         cam = cfg.camera
         self.tanks = TankStore(self.db)
         self.detector = Detector(cfg.detect, cam.width, cam.height)
-        self.events = EventManager(cfg.zone_events, cfg.burst_events, cfg.feeding, self.db, self.data / "thumbs")
+        self.events = EventManager(cfg.zone_events, cfg.burst_events, cfg.feeding, self.db, self.data / "thumbs",
+                                   cfg.chase)
+        self.events.night_window = (cfg.timelapse.night_start, cfg.timelapse.night_end)
         self.recorder = (Recorder(cfg.record, self.data / "rec", cam.width, cam.height, cam.fps, self.db)
                          if cfg.record.enabled else None)
         self.storage = Storage(cfg.storage, self.db, self.data,
@@ -111,6 +128,12 @@ class App:
         self._drops: list[tuple[float, int, int]] = []
         self.frames_total = 0
         self.capture_thread: threading.Thread | None = None
+        # Timing, as running averages in ms: the whole loop per frame, and analysis alone.
+        self.loop_ms = 0.0
+        self.analyze_ms = 0.0
+        self.stride = max(1, cfg.detect.analyze_every)
+        self._slow_since: float | None = None
+        self._fast_since: float | None = None
 
         self.tank_id: int | None = None
         self.A = IDENTITY.copy()
@@ -118,6 +141,8 @@ class App:
         self.tank_id, self.A = self.view.state.tank_id, self.view.state.A
         self.health = Health(self)
         self.danger = Danger(self, cfg.danger)
+        self.heat = HeatMaps(self.data, cfg.timelapse.night_start, cfg.timelapse.night_end)
+        self.trails = TrailsWorker(self.db, self.tanks, self.data, cfg.timelapse.night_start, cfg.timelapse.night_end)
 
         self.presence.listeners.append(self._on_presence)
         self.events.listeners.append(self._on_event)
@@ -149,6 +174,7 @@ class App:
             ignore = [transform_rect(r, A) for r in tank.setting("ignore")]
             bubbles = tank.setting("bubbles")
             self.detector.set_layout(spots, ignore, transform_rect(bubbles, A) if bubbles else None)
+            self.events.set_areas(spots)
         homes = {s.id: transform_rect(s.home, A) for s in tank.spotlights if s.home} if tank else {}
         self.presence.set_layout(tank, homes)
         if reset_events:
@@ -271,6 +297,7 @@ class App:
         self.view.start()
         self.storage.start()
         self.health.start()
+        self.trails.start()
         threading.Thread(target=self._tank_pictures, name="tank-pictures", daemon=True).start()
 
     def _tank_pictures(self) -> None:
@@ -300,6 +327,7 @@ class App:
         self.running = False
         self.events.close_all(time.time())
         self.stats.flush()
+        self.heat.save()
         if self.recorder:
             self.recorder.stop()
 
@@ -324,6 +352,7 @@ class App:
                 if not self.running:
                     break
                 now = time.time()
+                loop_t = time.perf_counter()
                 self.last_frame_wall = now
                 if n % 15 == 0:
                     tiny = cv2.resize(frame, (32, 20), interpolation=cv2.INTER_AREA)
@@ -338,12 +367,16 @@ class App:
                 tank = self.tank
                 maintenance = self._in_maintenance(now)
                 paused = maintenance or self.view.state.unsure
-                if n % max(1, self.cfg.detect.analyze_every) == 0:
+                if n % self.stride == 0:
+                    t_a = time.perf_counter()
                     scores = self.detector.analyze(frame, ts)
+                    self.analyze_ms = 0.95 * self.analyze_ms + 0.05 * (time.perf_counter() - t_a) * 1000
                     self.events.update(scores, ts, frame, paused=paused)
                     self.danger.update(tank, ts, scores)
                     if not paused:
                         self.presence.update(frame, ts, scores.settling)
+                        if tank is not None and not scores.settling:
+                            self.heat.add(tank.id, ts, scores.mask)
                 n += 1
                 self.stats.add(self.tank_id, ts, scores, tank.zone_threshold if tank else 1.0, maintenance)
                 if self.recorder:
@@ -358,6 +391,8 @@ class App:
                     self.frame_cond.notify_all()
                 self.frames_total += 1
                 fps_n += 1
+                self.loop_ms = 0.95 * self.loop_ms + 0.05 * (time.perf_counter() - loop_t) * 1000
+                self._adapt_stride(now)
                 if ts - fps_t >= 2.0:
                     self.fps = fps_n / (ts - fps_t)
                     fps_t, fps_n = ts, 0
@@ -367,6 +402,28 @@ class App:
         except Exception:
             log.exception("capture loop crashed")
             raise
+
+    def _adapt_stride(self, now: float) -> None:
+        """If the Pi can't keep up, analyse every other frame rather than drop frames; go back when it can."""
+        budget = 1000.0 / max(1, self.cfg.camera.fps)
+        base = max(1, self.cfg.detect.analyze_every)
+        if self.loop_ms > budget * 0.8:
+            self._fast_since = None
+            self._slow_since = self._slow_since or now
+            if now - self._slow_since > 10 and self.stride < 4:
+                self.stride += 1
+                self._slow_since = None
+                log.warning("falling behind (%.0f ms per frame); analysing every %d frames", self.loop_ms, self.stride)
+        elif self.loop_ms < budget * 0.35 and self.stride > base:
+            self._slow_since = None
+            self._fast_since = self._fast_since or now
+            if now - self._fast_since > 120:
+                self.stride -= 1
+                self._fast_since = None
+                log.info("caught up; analysing every %d frames", self.stride)
+        else:
+            self._slow_since = None
+            self._fast_since = None
 
     def wait_frame(self, after_ts: float, timeout: float = 2.0) -> tuple[np.ndarray | None, float, Scores]:
         with self.frame_cond:

@@ -33,14 +33,17 @@ def clock(ts: float) -> str:
 
 
 def spot_summary(db: DB, spot, start: float, end: float) -> dict:
-    rows = db.query("""SELECT minute_ts, moving_s FROM spot_activity
+    rows = db.query("""SELECT minute_ts, moving_s, still_s FROM spot_activity
                        WHERE spot_id=? AND minute_ts >= ? AND minute_ts < ?""", (spot.id, start, end))
     active = [r["minute_ts"] for r in rows if (r["moving_s"] or 0) >= ACTIVE_MINUTE_S]
     visits = db.value("""SELECT COUNT(*) FROM events WHERE spot_id=? AND wrong=0
                          AND start_ts >= ? AND start_ts < ?""", (spot.id, start, end))
     out_s, outings = time_out(db, spot.id, start, end) if spot.home else (0.0, 0)
+    still = sum((r["still_s"] or 0) for r in rows) / 60
+    moving = sum((r["moving_s"] or 0) for r in rows) / 60
     return {"id": spot.id, "name": spot.name, "has_home": spot.home is not None,
-            "moving_minutes": sum((r["moving_s"] or 0) for r in rows) / 60,
+            "moving_minutes": moving, "still_minutes": still, "travel_minutes": max(0.0, moving - still),
+            "still_label": spot.still_label, "moving_label": spot.moving_label,
             "first": min(active) if active else None, "last": max(active) if active else None,
             "visits": visits, "out_minutes": out_s / 60, "outings": outings}
 
@@ -56,7 +59,7 @@ def tank_summary(db: DB, tank, start: float, end: float) -> dict:
                         WHERE tank_id=? AND end_ts > ? AND start_ts < ?""", (end, start, tank.id, start, end))
     return {"tank_id": tank.id, "name": tank.name, "watched_hours": watched / 3600,
             "spots": [spot_summary(db, s, start, end) for s in tank.spotlights],
-            "bursts": count("burst"), "feedings": count("feeding"),
+            "bursts": count("burst"), "feedings": count("feeding"), "chases": count("chase"),
             "maintenance_minutes": (maint or 0) / 60,
             "best_event": best["id"] if best else None, "best_thumb": best["thumb"] if best else None}
 
@@ -72,7 +75,13 @@ def spot_line(s: dict) -> str:
         times = f"{s['outings']} time{'s' if s['outings'] != 1 else ''}"
         line = f"{s['name']} came out {times}, {fmt_minutes(s['out_minutes'])} in all"
     elif s["moving_minutes"] >= 1:
-        line = f"{s['name']} was moving for {fmt_minutes(s['moving_minutes'])}"
+        if s.get("still_minutes", 0) >= 5 and s.get("travel_minutes", 0) >= 5:
+            line = (f"{s['name']} was {s['still_label']} for {fmt_minutes(s['still_minutes'])} and "
+                    f"{s['moving_label']} for {fmt_minutes(s['travel_minutes'])}")
+        elif s.get("still_minutes", 0) >= 5 and s["still_minutes"] > s["moving_minutes"] * 0.7:
+            line = f"{s['name']} was {s['still_label']} for {fmt_minutes(s['still_minutes'])}"
+        else:
+            line = f"{s['name']} was moving for {fmt_minutes(s['moving_minutes'])}"
     else:
         return f"{s['name']} stayed out of sight"
     if s["first"]:
@@ -92,6 +101,8 @@ def morning_text(tanks: list[dict], problems: list[dict]) -> tuple[str, str, str
             extra.append(f"{t['feedings']} feeding{'s' if t['feedings'] != 1 else ''}")
         if t["bursts"]:
             extra.append(f"{t['bursts']} burst{'s' if t['bursts'] != 1 else ''} of activity")
+        if t.get("chases"):
+            extra.append(f"{t['chases']} chase{'s' if t['chases'] != 1 else ''} while the tank was quiet")
         if extra:
             bits.append(", ".join(extra).capitalize())
         if not bits:
@@ -194,10 +205,12 @@ def trends(db: DB, tank, days: int, night_start: str, night_end: str) -> dict:
         for spot in tank.spotlights:
             s = spot_summary(db, spot, start, end)
             point["spots"][spot.id] = {"moving_minutes": round(s["moving_minutes"], 1),
+                                       "still_minutes": round(s["still_minutes"], 1),
                                        "out_minutes": round(s["out_minutes"], 1) if spot.home else None}
         maint = db.value("SELECT COUNT(*) FROM maintenance WHERE tank_id=? AND end_ts > ? AND start_ts < ?",
                          (tank.id, start, end))
         point["maintenance"] = bool(maint)
         points.append(point)
-    return {"spotlights": [{"id": s.id, "name": s.name, "has_home": s.home is not None} for s in tank.spotlights],
+    return {"spotlights": [{"id": s.id, "name": s.name, "has_home": s.home is not None,
+                            "still_label": s.still_label, "moving_label": s.moving_label} for s in tank.spotlights],
             "nights": points}

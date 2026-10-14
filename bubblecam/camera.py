@@ -100,8 +100,9 @@ def _file_frames(cfg: CameraConfig) -> Iterator[tuple[np.ndarray, float]]:
 
 
 class SyntheticTank:
-    """A fake night tank: textured substrate, a cave, a bubble column, a small school of
-    fast fish, and a slow dark "pleco" that leaves the cave every so often."""
+    """A fake tank: textured substrate, a cave, a bubble column, a school of fast fish, a slow dark
+    "pleco" that leaves the cave every so often, a shrimp on a perch that fans or forages, a snail
+    crawling the glass, and switches for chases, a dead fish and night lighting."""
 
     def __init__(self, width: int, height: int, seed: int = 1):
         self.w, self.h = width, height
@@ -123,6 +124,17 @@ class SyntheticTank:
         # Feeding: (start, end) times in seconds; the school rushes to the surface and goes wild.
         self.feeds: list[tuple[float, float]] = []
         self.bubbles_on = True
+        # Night: the tank light is off (dimmer, IR look) and the school sleeps.
+        self.night = False
+        # Chases: (start, end) stretches where one fish darts after another.
+        self.chases: list[tuple[float, float]] = []
+        # A fish floating dead still at the surface from this time on (None = no).
+        self.dead_from: float | None = None
+        # Shrimp perch (upper right) and what it's doing: "fanning", "foraging" or "idle".
+        self.perch = (int(width * 0.84), int(height * 0.22))
+        self.shrimp_mode = "idle"
+        # Snail: crawls slowly along the glass, about 2 px a second.
+        self.snail = True
 
     def frame(self, t: float) -> np.ndarray:
         img = self.bg.copy()
@@ -132,7 +144,7 @@ class SyntheticTank:
         for i in range(8 if self.bubbles_on else 0):
             by = int((h - ((t * 120 + i * 97) % h)))
             cv2.circle(img, (bx + int(6 * math.sin(t * 3 + i)), by), 5, 200, -1)
-        # School of small fast fish, mostly in the upper water column.
+        # School of small fast fish, mostly in the upper water column; asleep (still, low) at night.
         feeding = any(a <= t < b for a, b in self.feeds)
         for k, (phase, speed) in enumerate(self.school * (4 if feeding else 1)):
             if feeding:
@@ -140,9 +152,41 @@ class SyntheticTank:
                 y = int(h * (0.08 + 0.06 * math.sin(t * 4.3 * speed + phase * 2 + k)))
                 cv2.ellipse(img, (x, y), (22, 8), 0, 0, 360, 170, -1)
                 continue
-            x = int(w * (0.5 + 0.4 * math.sin(t * 0.7 * speed + phase)))
-            y = int(h * (0.3 + 0.1 * math.sin(t * 1.3 * speed + phase * 2)))
+            if self.night:
+                x = int(w * (0.3 + 0.07 * k))
+                y = int(h * 0.55 + 2 * math.sin(t * 0.3 + phase))
+            else:
+                x = int(w * (0.5 + 0.4 * math.sin(t * 0.7 * speed + phase)))
+                y = int(h * (0.3 + 0.1 * math.sin(t * 1.3 * speed + phase * 2)))
             cv2.ellipse(img, (x, y), (14, 5), 0, 0, 360, 170, -1)
+        # A chase: two fish, one darting after the other, across the middle of the tank.
+        for a, b in self.chases:
+            if a <= t < a + 1.2:                                   # a dart: across the tank in about a second
+                p = (t - a) / 1.2
+                x = int(w * (0.15 + 0.7 * p))
+                y = int(h * (0.45 + 0.06 * math.sin(p * 6)))
+                cv2.ellipse(img, (x, y), (16, 6), 0, 0, 360, 185, -1)
+                cv2.ellipse(img, (x - 42, y + 6), (16, 6), 0, 0, 360, 160, -1)
+        # Dead fish: floating still at the surface, slightly drifting.
+        if self.dead_from is not None and t >= self.dead_from:
+            cv2.ellipse(img, (int(w * 0.45) + int(2 * math.sin(t * 0.05)), int(h * 0.05)), (16, 6), 0, 0, 360, 175, -1)
+        # Shrimp on its perch.
+        px, py = self.perch
+        if self.shrimp_mode == "foraging":
+            px = px - int(140 * (0.5 + 0.5 * math.sin(t * 0.3)))     # slow walk back and forth, 7 cm or so
+            py = py + int(20 * math.sin(t * 0.5))
+        cv2.ellipse(img, (px, py), (24, 7), 0, 0, 360, 140, -1)
+        if self.shrimp_mode == "fanning":
+            for k in range(4):                                        # fans flicking in place
+                ang = 30 * math.sin(t * 6 + k) - 60 + 25 * k
+                ex = px - 24 + int(18 * math.cos(math.radians(ang)))
+                ey = py + int(18 * math.sin(math.radians(ang)))
+                cv2.line(img, (px - 24, py), (ex, ey), 190, 2)
+        # Snail: along the front glass, slowly.
+        if self.snail:                                                # about a centimetre a minute
+            sx = int((t * 0.25) % (w * 0.6) + w * 0.2)
+            sy = int(h * 0.5 + 30 * math.sin(t * 0.002))
+            cv2.circle(img, (sx, sy), 7, 110, -1)
         # Pleco: emerges from the cave, wanders on the sand, goes back.
         cx, cy, cw, ch = self.cave
         home = (cx + cw // 2, cy + ch // 2)
@@ -154,18 +198,23 @@ class SyntheticTank:
         else:
             pos = (home[0] + int(3 * math.sin(t * 0.5)), home[1])
         cv2.ellipse(img, pos, (40, 14), 0, 0, 360, 12, -1)
+        if self.night:
+            img = (img.astype(np.float32) * 0.45).astype(np.uint8)
         noise = self.rng.integers(0, 4, img.shape, dtype=np.uint8)
         return cv2.add(img, noise)
 
 
 def _synthetic_frames(cfg: CameraConfig) -> Iterator[tuple[np.ndarray, float]]:
     """For trying things without hardware. If BUBBLECAM_SYNTH_CTRL names a file containing
-    "seed dx dy [feed] [nobubbles]", the fake camera switches tank (seed), shifts by dx, dy pixels,
-    "feed" puts on a feeding rush and "nobubbles" stops the filter: handy for testing tank
-    recognition, feeding detection and the bubble alarm."""
+    "seed dx dy" plus any of these words, the fake camera obeys them while the app runs:
+      feed       a feeding rush            nobubbles  the filter stops
+      night      tank light off            chase      one fish darts after another
+      dead       a fish floats still       fanning / foraging   what the shrimp is doing
+      nocam      the camera is unplugged   freeze     the picture stops changing"""
     tanks: dict[int, SyntheticTank] = {}
     ctrl = os.environ.get("BUBBLECAM_SYNTH_CTRL")
     seed, dx, dy = 1, 0, 0
+    nocam = freeze = False
     period = 1.0 / cfg.fps
     start = time.time()
     next_t = start
@@ -187,11 +236,23 @@ def _synthetic_frames(cfg: CameraConfig) -> Iterator[tuple[np.ndarray, float]]:
             feed = "feed" in parts
             tank = tanks.setdefault(seed, SyntheticTank(cfg.width, cfg.height, seed=seed))
             tank.bubbles_on = "nobubbles" not in parts
+            tank.night = "night" in parts
+            tank.shrimp_mode = "fanning" if "fanning" in parts else "foraging" if "foraging" in parts else "idle"
             t = now - start
             if feed and not any(a <= t < b for a, b in tank.feeds):
                 tank.feeds.append((t, t + 25))
+            if "chase" in parts and not any(a <= t < b for a, b in tank.chases):
+                tank.chases.append((t, t + 3))
+            if "dead" in parts and tank.dead_from is None:
+                tank.dead_from = t
+            if "dead" not in parts:
+                tank.dead_from = None
+            nocam = "nocam" in parts
+            freeze = "freeze" in parts
+        if nocam:
+            continue                      # the camera is "unplugged": no frames at all
         tank = tanks.setdefault(seed, SyntheticTank(cfg.width, cfg.height, seed=seed))
-        frame = tank.frame(now - start)
+        frame = tank.frame(start if freeze else now - start)
         if dx or dy:
             M = np.float32([[1, 0, dx], [0, 1, dy]])
             frame = cv2.warpAffine(frame, M, (frame.shape[1], frame.shape[0]), borderMode=cv2.BORDER_REFLECT)

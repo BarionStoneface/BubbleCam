@@ -40,7 +40,7 @@ class FrameReader:
         # Seek half a frame early: ffmpeg returns the first frame at or after the seek time.
         ss = max(0.0, (idx - 0.5) / self.fps)
         self.proc = subprocess.Popen(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{ss:.4f}", "-i", str(self.path),
+            ["nice", "-n", "10", "ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{ss:.4f}", "-i", str(self.path),
              "-f", "rawvideo", "-pix_fmt", "gray", "-"],
             stdout=subprocess.PIPE)
         self.pos = idx

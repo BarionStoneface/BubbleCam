@@ -22,7 +22,7 @@ def test_night_summary_and_text(tmp_path):
     db.execute("INSERT INTO presence VALUES (?, ?, ?, 'away')", (pleco.id, start + 1800, tank.id))
     db.execute("INSERT INTO presence VALUES (?, ?, ?, 'home')", (pleco.id, start + 1800 + 2700, tank.id))
     for m in range(5):
-        db.execute("INSERT INTO spot_activity VALUES (?,?,?,?,?)", (shrimp.id, int(start) + 3600 + m * 60, tank.id, 40, 0.1))
+        db.execute("INSERT INTO spot_activity VALUES (?,?,?,?,?,0)", (shrimp.id, int(start) + 3600 + m * 60, tank.id, 40, 0.1))
     db.execute("""INSERT INTO health_log(kind, message, severity, start_ts, end_ts)
                   VALUES ('camera', 'The camera isn''t sending pictures', 'problem', ?, ?)""",
                (start + 7200, start + 7800))

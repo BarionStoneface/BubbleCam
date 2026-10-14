@@ -10,9 +10,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .config import BurstEventConfig, FeedingConfig, ZoneEventConfig
+from .config import BurstEventConfig, ChaseEventConfig, FeedingConfig, ZoneEventConfig
 from .db import DB
 from .detector import Scores
+from .tracks import ChaseConfig, ChaseWatch, Tracker
+
+# Something in a spotlighted animal's area that travels faster than this is a fish passing through, not
+# the animal: plecos and shrimp cover well under a twentieth of the tank a second even when busy, while
+# a cruising guppy covers more. Frame widths per second, measured over the last two seconds.
+PASSER_SPEED = 0.06
+SLOW_AGE = 2.0
 
 log = logging.getLogger(__name__)
 
@@ -94,8 +101,9 @@ class EventManager:
     """Events for whichever tank the camera is looking at. Reset whenever that changes."""
 
     def __init__(self, zone_cfg: ZoneEventConfig, burst_cfg: BurstEventConfig, feed_cfg: FeedingConfig,
-                 db: DB, thumbs_dir: Path):
+                 db: DB, thumbs_dir: Path, chase_cfg: ChaseEventConfig | None = None):
         self.zcfg, self.bcfg, self.fcfg = zone_cfg, burst_cfg, feed_cfg
+        self.ccfg = chase_cfg or ChaseEventConfig()
         self.db = db
         self.thumbs_dir = thumbs_dir
         thumbs_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +125,13 @@ class EventManager:
         self.feeding = Hysteresis(self.fcfg.start_seconds, self.fcfg.end_seconds)
         self.baseline = Baseline(self.bcfg.baseline_minutes)
         self.last_feeding = float("-inf")
+        self._areas = {s.id: s.areas for s in (tank.spotlights if tank else [])}
+        c = self.ccfg
+        self.chases = ChaseWatch(ChaseConfig(speed=c.speed, min_seconds=c.min_seconds, min_path=c.min_path,
+                                             near=c.near, quiet_tank=c.quiet_tank, cooldown=c.cooldown))
+        self.chase_open_until = 0.0
+        self.tracker = Tracker()
+        self.night_window: tuple[str, str] | None = None     # set by the app: (night_start, night_end)
 
     def update(self, scores: Scores, ts: float, frame: np.ndarray, paused: bool = False) -> None:
         """paused: maintenance mode; keep the baseline learning but make no events."""
@@ -125,9 +140,14 @@ class EventManager:
             return
         quiet = scores.settling or paused
         threshold = tank.zone_threshold
+        tracks = self.tracker.update(scores.blobs, ts) if not quiet else []
+        fast = [tr.pos for tr in tracks if tr.path_speed() >= PASSER_SPEED]
+        slow = [tr.pos for tr in tracks if tr.path_speed() < PASSER_SPEED and tr.pts[-1][0] - tr.pts[0][0] >= SLOW_AGE]
         for spot_id, tr in self.spot_trackers.items():
             value = scores.spots.get(spot_id, 0.0)
             on = value >= threshold and not quiet
+            if on and not self._slow_inside(spot_id, slow, fast):
+                on = False           # only fish passing through
             self._handle(f"spot:{spot_id}", "spot", spot_id, tr, tr.update(on, ts, value, frame),
                          self.zcfg.pre_roll, self.zcfg.post_roll)
 
@@ -150,6 +170,71 @@ class EventManager:
             on = busy and not self.feeding.active
             self._handle("burst", "burst", None, self.burst, self.burst.update(on, ts, scores.tank, frame),
                          self.bcfg.pre_roll, self.bcfg.post_roll)
+
+        # Chases and darts: at night, a quiet tank (fish asleep) and one thing suddenly tearing across it.
+        if self.ccfg.enabled:
+            calm = not quiet and not self.feeding.active and not self.burst.active and self._is_night(ts)
+            if not calm:
+                self.chases.reset()
+            found = self.chases.update(scores.blobs, ts, base, quiet_ok=calm)
+            if found:
+                kind, track, speed = found
+                self._start_chase(kind, ts, frame)
+            if "chase" in self.open_ids and ts >= self.chase_open_until:
+                self._close_chase(ts)
+
+    def _slow_inside(self, spot_id: int, slow: list, fast: list) -> bool:
+        """Is any slow moving thing inside this animal's areas? (Fast ones are passers by.)"""
+        spot = self.tank.spotlight(spot_id)
+        areas = self._areas.get(spot_id, []) if hasattr(self, "_areas") else (spot.areas if spot else [])
+        def inside(p):
+            return any(a["x"] <= p[0] <= a["x"] + a["w"] and a["y"] <= p[1] <= a["y"] + a["h"] for a in areas)
+        if any(inside(p) for p in slow):
+            return True
+        if any(inside(p) for p in fast):
+            return False
+        # Nothing tracked inside yet (a brand new blob): give it the benefit of the doubt for a moment;
+        # the start delay on moments means a passer still has to stay slow for seconds to count.
+        return True
+
+    def set_areas(self, areas: dict[int, list[dict]]) -> None:
+        """Where each spotlighted animal's areas are in the current picture (after camera adjustment)."""
+        self._areas = areas
+
+    def _is_night(self, ts: float) -> bool:
+        if not self.night_window:
+            return True
+        from datetime import datetime
+        t = datetime.fromtimestamp(ts).time()
+        ns = datetime.strptime(self.night_window[0], "%H:%M").time()
+        ne = datetime.strptime(self.night_window[1], "%H:%M").time()
+        return (t >= ns or t < ne) if ns > ne else (ns <= t < ne)
+
+    def _start_chase(self, detail: str, ts: float, frame: np.ndarray) -> None:
+        c = self.ccfg
+        if "chase" in self.open_ids:
+            # Another dart while the clip is still open: extend it, and a chase outranks a dart.
+            self.chase_open_until = ts + c.post_roll
+            if detail == "chase":
+                self.db.execute("UPDATE events SET detail='chase' WHERE id=?", (self.open_ids["chase"],))
+            return
+        ev_id = self.db.open_event(self.tank.id, "chase", None, ts - c.pre_roll)
+        self.db.execute("UPDATE events SET detail=?, peak=?, peak_ts=? WHERE id=?", (detail, 1.0, ts, ev_id))
+        thumb = str(self.thumbs_dir / f"{ev_id}.jpg")
+        cv2.imwrite(thumb, _thumb(frame), [cv2.IMWRITE_JPEG_QUALITY, 80])
+        self.db.execute("UPDATE events SET thumb=? WHERE id=?", (thumb, ev_id))
+        self.open_ids["chase"] = ev_id
+        self.chase_open_until = ts + c.post_roll
+        log.info("%s spotted", detail)
+        self._notify_start("chase", None, ts)
+
+    def _close_chase(self, ts: float) -> None:
+        ev_id = self.open_ids.pop("chase", None)
+        if ev_id is None:
+            return
+        self.db.execute("UPDATE events SET end_ts=? WHERE id=?", (ts, ev_id))
+        for fn in self.closed_listeners:
+            fn(ev_id)
 
     def _start_feeding(self, ts: float) -> None:
         tank_id = self.tank.id

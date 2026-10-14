@@ -59,6 +59,12 @@ class NameIn(BaseModel):
     name: str
 
 
+class SpotPatch(BaseModel):
+    name: str | None = None
+    still_label: str | None = None
+    moving_label: str | None = None
+
+
 class TimelapseIn(BaseModel):
     tank_id: int | None = None
     start_ts: float
@@ -127,10 +133,24 @@ def create_app(core: App) -> FastAPI:
         out = []
         for spot in tank.spotlights:
             value = s.spots.get(spot.id, 0.0)
+            mode = core.stats.modes.get(spot.id, "quiet")
             out.append({"id": spot.id, "name": spot.name, "moving": value >= tank.zone_threshold,
                         "value": value, "presence": core.presence.status(spot.id), "has_home": spot.home is not None,
-                        "has_areas": bool(spot.areas)})
+                        "has_areas": bool(spot.areas), "mode": mode,
+                        "doing": spot.still_label if mode == "still" else spot.moving_label if mode == "moving" else None})
         return out
+
+    def perf() -> dict:
+        import os
+        try:
+            load = os.getloadavg()[0] / (os.cpu_count() or 1)
+        except (OSError, AttributeError):
+            load = None
+        from ..health import cpu_temp
+        return {"loop_ms": round(core.loop_ms, 1), "analyze_ms": round(core.analyze_ms, 1),
+                "budget_ms": round(1000 / max(1, cfg.camera.fps), 1), "stride": core.stride,
+                "cpu_load": round(load, 2) if load is not None else None, "temp_c": cpu_temp(),
+                "drop_rate": round(core.drop_rate(), 3)}
 
     @api.get("/api/status")
     def status():
@@ -138,6 +158,7 @@ def create_app(core: App) -> FastAPI:
         tank = core.tank
         return {
             "fps": round(core.fps, 1),
+            "perf": perf(),
             "health": core.health.status(),
             "view": core.view.status(),
             "tank": {"id": tank.id, "name": tank.name} if tank else None,
@@ -239,8 +260,9 @@ def create_app(core: App) -> FastAPI:
             bad(e)
 
     @api.patch("/api/spotlights/{spot_id}")
-    def rename_spotlight(spot_id: int, body: NameIn):
-        core.tanks.update_spotlight(spot_id, name=body.name)
+    def patch_spotlight(spot_id: int, body: SpotPatch):
+        core.tanks.update_spotlight(spot_id, name=body.name, still_label=body.still_label,
+                                    moving_label=body.moving_label)
         return {"ok": True}
 
     @api.delete("/api/spotlights/{spot_id}")
@@ -273,7 +295,7 @@ def create_app(core: App) -> FastAPI:
     def day(tank_id: int, start: float, end: float):
         tank = tank_or_404(tank_id)
         names = {s.id: s.name for s in tank.spotlights}
-        evs = db.query("""SELECT id, kind, spot_id, start_ts, end_ts, wrong, starred, thumb IS NOT NULL AS has_thumb
+        evs = db.query("""SELECT id, kind, spot_id, detail, start_ts, end_ts, wrong, starred, thumb IS NOT NULL AS has_thumb
                           FROM events WHERE tank_id=? AND start_ts < ? AND COALESCE(end_ts, ?) > ?
                           ORDER BY start_ts""", (tank_id, end, time.time(), start))
         for e in evs:
@@ -373,7 +395,39 @@ def create_app(core: App) -> FastAPI:
 
     @api.get("/api/tanks/{tank_id}/nights")
     def tank_nights(tank_id: int, days: int = 14):
-        return nights(db, tank_or_404(tank_id), days, T.night_start, T.night_end)
+        rows = nights(db, tank_or_404(tank_id), days, T.night_start, T.night_end)
+        for n in rows:
+            date = datetime.fromtimestamp(n["start"]).strftime("%Y-%m-%d")
+            n["date"] = date
+            n["trails"] = "ready" if core.trails.path(tank_id, date).exists() else \
+                "none" if core.trails.path(tank_id, date).with_suffix(".none").exists() else "pending"
+        return rows
+
+    @api.get("/api/tanks/{tank_id}/heatmap.png")
+    def heatmap(tank_id: int, period: str = "night", days: int = 7):
+        tank_or_404(tank_id)
+        if period not in ("day", "night"):
+            raise HTTPException(400, "period is day or night")
+        bg = core.latest if tank_id == core.tank_id else None
+        if bg is None:
+            p = core.data / "tanks" / str(tank_id) / "last.jpg"
+            bg = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE) if p.exists() else None
+        png = core.heat.render(tank_id, period, min(days, 90), bg)
+        if png is None:
+            raise HTTPException(404, "no movement recorded yet")
+        return Response(png, media_type="image/png", headers={"Cache-Control": "max-age=300"})
+
+    @api.get("/api/tanks/{tank_id}/trails.png")
+    def trails(tank_id: int, date: str):
+        tank_or_404(tank_id)
+        datetime.strptime(date, "%Y-%m-%d")
+        p = core.trails.path(tank_id, date)
+        if not p.exists():
+            if p.with_suffix(".none").exists():
+                raise HTTPException(404, "not enough footage that night")
+            core.trails.request(tank_id, date)
+            raise HTTPException(202, "being drawn; try again in a minute")
+        return FileResponse(p, media_type="image/png", headers={"Cache-Control": "max-age=86400"})
 
     @api.get("/api/tanks/{tank_id}/trends")
     def tank_trends(tank_id: int, days: int = 30):
@@ -592,6 +646,7 @@ def create_app(core: App) -> FastAPI:
                        "fps": cfg.camera.fps, "exposure": cfg.camera.exposure, "gain": cfg.camera.gain},
             "encoder": core.recorder.encoder if core.recorder else None,
             "dropped_frames": core.recorder.dropped if core.recorder else 0,
+            "perf": perf(),
         }
 
     api.mount("/static", StaticFiles(directory=STATIC), name="static")

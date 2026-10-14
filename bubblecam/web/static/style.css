@@ -14,6 +14,7 @@
   --feed: #8fd46a;          /* feeding */
   --burst: #e9876b;         /* bursts of activity */
   --air: #7fb4f0;           /* filter bubbles */
+  --chase: #d98ae0;         /* chases and darts */
   --bad: #e46a6a;
   --ok: #57c78b;
   --shade: rgba(0, 0, 0, .35);
@@ -33,7 +34,7 @@
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     --bg: #eef3f3; --surface: #ffffff; --surface-2: #f3f7f7; --line: #d5e0e1; --text: #11201f; --dim: #5a6e72;
-    --accent: #138f80; --accent-ink: #ffffff; --warm: #b8741a; --feed: #4a8f2c; --burst: #c45a3c; --bad: #c43c3c; --air: #2f6fb8;
+    --accent: #138f80; --accent-ink: #ffffff; --warm: #b8741a; --feed: #4a8f2c; --burst: #c45a3c; --bad: #c43c3c; --air: #2f6fb8; --chase: #9a3fa5;
     --ok: #2f8a5a; --shade: rgba(0, 0, 0, .08); color-scheme: light;
   }
 }
@@ -152,7 +153,7 @@ label.field { display: grid; gap: 5px; font-size: var(--text-sm); color: var(--d
 .moment .meta { padding: 9px 12px 11px; display: grid; gap: 3px; }
 .moment.wrong { opacity: .55; }
 .tag { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--line); }
-.tag.spot { color: var(--accent); } .tag.burst { color: var(--burst); } .tag.feeding { color: var(--feed); }
+.tag.spot { color: var(--accent); } .tag.burst { color: var(--burst); } .tag.feeding { color: var(--feed); } .tag.chase { color: var(--chase); }
 .star { background: none; border: 0; cursor: pointer; font-size: 20px; color: var(--dim); padding: 0 2px; }
 .star.on { color: var(--warm); }
 

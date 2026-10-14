@@ -77,11 +77,14 @@ class Spotlight:
     slot: int
     areas: list[dict]
     home: dict | None
+    still_label: str = "busy in one place"
+    moving_label: str = "moving around"
 
     def to_dict(self, A: np.ndarray = IDENTITY) -> dict:
         return {"id": self.id, "name": self.name, "slot": self.slot,
                 "areas": [transform_rect(a, A) for a in self.areas],
-                "home": transform_rect(self.home, A) if self.home else None}
+                "home": transform_rect(self.home, A) if self.home else None,
+                "still_label": self.still_label, "moving_label": self.moving_label}
 
 
 @dataclass
@@ -137,7 +140,8 @@ class TankStore:
                 if r["tank_id"] in tanks:
                     tanks[r["tank_id"]].spotlights.append(Spotlight(
                         r["id"], r["tank_id"], r["name"], r["slot"], json.loads(r["areas"] or "[]"),
-                        json.loads(r["home"]) if r["home"] else None))
+                        json.loads(r["home"]) if r["home"] else None,
+                        r["still_label"] or "busy in one place", r["moving_label"] or "moving around"))
             self.tanks = tanks
         for fn in self.listeners:
             fn()
@@ -206,12 +210,17 @@ class TankStore:
         return self.tanks[tank_id].spotlight(spot_id)
 
     def update_spotlight(self, spot_id: int, name: str | None = None, areas: list | None = None,
-                         home: dict | None | bool = False) -> None:
+                         home: dict | None | bool = False, still_label: str | None = None,
+                         moving_label: str | None = None) -> None:
         """home=False means leave it; None clears it."""
         sets, args = [], []
         if name is not None and name.strip():
             sets.append("name=?")
             args.append(name.strip())
+        for col, value in (("still_label", still_label), ("moving_label", moving_label)):
+            if value is not None and value.strip():
+                sets.append(f"{col}=?")
+                args.append(value.strip()[:30])
         if areas is not None:
             sets.append("areas=?")
             args.append(json.dumps([r for r in (clean_rect(a) for a in areas) if r]))

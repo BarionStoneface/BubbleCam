@@ -92,6 +92,21 @@ class FeedingConfig:
 
 
 @dataclass
+class ChaseEventConfig:
+    # A dart: something crossing the tank fast while the tank is otherwise quiet (fish asleep).
+    # With a second fish right behind, it's a chase.
+    enabled: bool = True
+    speed: float = 0.5            # frame widths per second
+    min_seconds: float = 0.3
+    min_path: float = 0.15        # fraction of the frame covered
+    near: float = 0.09
+    quiet_tank: float = 0.006     # whole tank movement must be under this (baseline over 10 min)
+    cooldown: float = 20.0        # darts closer together than this are one moment
+    pre_roll: float = 5.0
+    post_roll: float = 4.0
+
+
+@dataclass
 class DangerConfig:
     # Filter bubbles: "stopped" when the bubble box shows less than this share of its usual movement...
     bubble_ratio: float = 0.35
@@ -180,6 +195,7 @@ class Config:
     zone_events: ZoneEventConfig = field(default_factory=ZoneEventConfig)
     burst_events: BurstEventConfig = field(default_factory=BurstEventConfig)
     feeding: FeedingConfig = field(default_factory=FeedingConfig)
+    chase: ChaseEventConfig = field(default_factory=ChaseEventConfig)
     danger: DangerConfig = field(default_factory=DangerConfig)
     timelapse: TimelapseConfig = field(default_factory=TimelapseConfig)
     presence: PresenceConfig = field(default_factory=PresenceConfig)

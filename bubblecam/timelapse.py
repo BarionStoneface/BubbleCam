@@ -198,7 +198,7 @@ def render(db: DB, cfg: Config, tl_id: int, tanks=None) -> None:
     w, h = probe_size(segments[picks[0].seg]["path"])
     enc = detect_encoder(cfg.record.encoder)
     proc = subprocess.Popen(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        ["nice", "-n", "15", "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
          "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{w}x{h}", "-framerate", str(p.output_fps), "-i", "-",
          *encoder_args(enc, "4M", p.output_fps * 2), "-movflags", "+faststart", str(out)],
         stdin=subprocess.PIPE)

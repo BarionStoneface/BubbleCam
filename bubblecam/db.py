@@ -11,7 +11,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-VERSION = 2
+VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tanks (
@@ -29,7 +29,9 @@ CREATE TABLE IF NOT EXISTS spotlights (
     slot INTEGER NOT NULL,                   -- 0..3: column in the per frame recording sidecar
     areas TEXT NOT NULL DEFAULT '[]',        -- where it hangs out
     home TEXT,                               -- cave mouth or perch, for in/out
-    created_ts REAL NOT NULL
+    created_ts REAL NOT NULL,
+    still_label TEXT NOT NULL DEFAULT 'busy in one place',   -- your words for moving without going anywhere
+    moving_label TEXT NOT NULL DEFAULT 'moving around'       -- ...and for travelling
 );
 
 -- Which tank the camera was looking at, from this time on (NULL tank = didn't recognise the view).
@@ -51,8 +53,9 @@ CREATE INDEX IF NOT EXISTS segments_start ON segments(start_ts);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY,
     tank_id INTEGER,
-    kind TEXT NOT NULL,          -- 'spot', 'burst', 'feeding'
+    kind TEXT NOT NULL,          -- 'spot', 'burst', 'feeding', 'chase'
     spot_id INTEGER,
+    detail TEXT,                 -- e.g. 'chase' or 'dart' for chase events
     start_ts REAL NOT NULL,
     end_ts REAL,                 -- NULL while still happening
     peak REAL DEFAULT 0,
@@ -84,6 +87,7 @@ CREATE TABLE IF NOT EXISTS spot_activity (
     tank_id INTEGER NOT NULL,
     moving_s REAL,               -- seconds this minute it was moving
     max REAL,
+    still_s REAL DEFAULT 0,      -- of those, seconds it was busy without going anywhere (fanning, grazing)
     PRIMARY KEY (spot_id, minute_ts)
 );
 

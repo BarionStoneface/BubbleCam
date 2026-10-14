@@ -7,6 +7,8 @@ Per frame it produces:
   top_share - how much of the movement is in the top quarter of the picture (fish rushing up to food)
   bubbles   - how much of the filter bubble box changed since the previous frame (None without a box)
   boxes     - moving blobs, for drawing on the live view
+  blobs     - the same blobs with centre and size, for tracking: (cx, cy, w, h, area) as fractions
+  centroids - per spotlighted animal, where its movement is centred (None when it isn't moving)
 """
 
 from __future__ import annotations
@@ -30,6 +32,9 @@ class Scores:
     top_share: float = 0.0
     spots: dict[int, float] = field(default_factory=dict)
     boxes: list[tuple[float, float, float, float]] = field(default_factory=list)  # fractions of frame
+    blobs: list[tuple[float, float, float, float, float]] = field(default_factory=list)
+    mask: np.ndarray | None = None      # the moving pixels, at analysis size (for heatmaps)
+    centroids: dict[int, tuple[float, float] | None] = field(default_factory=dict)
     bubbles: float | None = None
     brightness: float = 0.0
     light_change: bool = False
@@ -106,11 +111,13 @@ class Detector:
         self.brightness = mean if self.brightness is None else 0.9 * self.brightness + 0.1 * mean
         if self.bg is None or light_change:
             # Tank light switched (or first frame): start the background over and hold off on events
-            # while auto adjustments and the fish settle.
+            # while auto adjustments and the fish settle. Whatever was in this first frame is baked
+            # into the background and fades out over the next seconds looking like a slow mover, so the
+            # hold off covers that too.
             self.bg = smallf.copy()
             self.brightness = mean
+            self.settle_until = max(self.settle_until, ts + cfg.light_settle_seconds)
             if light_change:
-                self.settle_until = max(self.settle_until, ts + cfg.light_settle_seconds)
                 scores.light_change = True
             scores.settling = True
             return scores
@@ -121,13 +128,14 @@ class Detector:
         mask &= valid
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel)
 
-        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
         keep = np.zeros(n, bool)
         keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= cfg.min_blob_area
         moving = keep[labels].astype(np.uint8)
 
         total = int(moving.sum())
         scores.tank = total / valid_count
+        scores.mask = moving
         if scores.tank > DISTURBANCE:
             scores.disturbed = True
             self.restart(ts, 10.0)
@@ -135,10 +143,19 @@ class Detector:
             return scores
         scores.top_share = float((moving & self.top_mask).sum()) / total if total else 0.0
         for spot_id, m, count in watch:
-            scores.spots[spot_id] = float((moving & m).sum()) / count
+            inside = moving & m
+            hits = int(inside.sum())
+            scores.spots[spot_id] = hits / count
+            if hits:
+                mo = cv2.moments(inside, binaryImage=True)
+                scores.centroids[spot_id] = (mo["m10"] / mo["m00"] / self.w, mo["m01"] / mo["m00"] / self.h)
+            else:
+                scores.centroids[spot_id] = None
         scores.zone = max(scores.spots.values(), default=0.0)
         for i in np.nonzero(keep)[0]:
             x, y, bw, bh = stats[i, :4]
             scores.boxes.append((x / self.w, y / self.h, bw / self.w, bh / self.h))
+            scores.blobs.append((cents[i][0] / self.w, cents[i][1] / self.h, bw / self.w, bh / self.h,
+                                 stats[i, cv2.CC_STAT_AREA] / (self.w * self.h)))
         scores.settling = ts < self.settle_until
         return scores

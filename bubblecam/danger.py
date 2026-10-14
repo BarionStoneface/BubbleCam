@@ -6,6 +6,8 @@ in one line, what that can mean. Never what to do.
   filter bubbles stopped  a "danger": alerts even when notifications are set to quiet
   surface crowding        a "note" until tuned on real footage: status dot and morning summary only
   daytime stillness       a "note" likewise
+  something still         a fish sized thing that appeared and hasn't moved for a long time in daylight
+                          (a dead fish floats or lies in the open); a "note" likewise
 
 Each watch only counts time when the camera can actually see properly: not during maintenance, not while
 the lights are switching or the camera is moving, not when the picture is frozen or black (those are
@@ -19,6 +21,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 
+import cv2
 import numpy as np
 
 from .config import DangerConfig
@@ -129,12 +132,85 @@ class SurfaceWatch:
         return None
 
 
+STILL_SAMPLE_S = 120         # one small picture every 2 minutes
+STILL_KEEP = 90              # three hours of them
+STILL_W = 160
+STILL_DIFF = 18
+STILL_MIN_AREA = 0.0004      # fraction of the frame: smaller is a snail or noise
+STILL_MAX_AREA = 0.03        # bigger is a moved rock or a hand
+
+
+class StillObjectWatch:
+    """A fish sized thing that appeared within the last hour or two and has sat still since.
+
+    Keeps a small picture every two minutes. Every ten minutes it compares the last few pictures
+    (what's there now) with the ones from an hour or two ago (what was there before). A region that
+    differs from before but hasn't changed over the last half hour is a new still object. Lighting is
+    compared like for like, so the tank light going on or off doesn't count."""
+
+    def __init__(self):
+        self.samples: collections.deque = collections.deque(maxlen=STILL_KEEP)   # (ts, img, brightness)
+        self.last_sample = 0.0
+        self.last_check = 0.0
+        self.found: dict | None = None
+        self.kernel = np.ones((3, 3), np.uint8)
+
+    def add(self, ts: float, frame, brightness: float, usable: bool) -> None:
+        if not usable or ts - self.last_sample < STILL_SAMPLE_S:
+            return
+        h = round(frame.shape[0] * STILL_W / frame.shape[1])
+        small = cv2.GaussianBlur(cv2.resize(frame, (STILL_W, h), interpolation=cv2.INTER_AREA), (5, 5), 0)
+        self.samples.append((ts, small.astype(np.float32), brightness))
+        self.last_sample = ts
+
+    def _median(self, items):
+        return np.median(np.stack([img for _, img, _ in items]), axis=0)
+
+    def check(self, ts: float) -> dict | None:
+        """Returns {"x","y","w","h","surface": bool, "since": ts} while something is found."""
+        if ts - self.last_check < 600:
+            return self.found
+        self.last_check = ts
+        now_set = [s for s in self.samples if ts - s[0] <= 8 * 60]
+        mid_set = [s for s in self.samples if 25 * 60 <= ts - s[0] <= 40 * 60]
+        old_set = [s for s in self.samples if 60 * 60 <= ts - s[0] <= 150 * 60]
+        if len(now_set) < 2 or len(mid_set) < 2 or len(old_set) < 3:
+            return self.found
+        b_now = np.mean([s[2] for s in now_set])
+        if any(abs(s[2] - b_now) > 30 for s in mid_set + old_set):
+            return self.found          # lighting changed in between: can't compare fairly
+        now, mid, old = self._median(now_set), self._median(mid_set), self._median(old_set)
+        appeared = (np.abs(now - old) > STILL_DIFF) & (np.abs(now - mid) < STILL_DIFF * 0.6)
+        mask = cv2.morphologyEx(appeared.astype(np.uint8), cv2.MORPH_OPEN, self.kernel)
+        n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        h, w = mask.shape
+        best = None
+        for i in range(1, n):
+            area = stats[i, cv2.CC_STAT_AREA] / (w * h)
+            if STILL_MIN_AREA <= area <= STILL_MAX_AREA:
+                x, y, bw, bh = stats[i, :4]
+                cand = {"x": x / w, "y": y / h, "w": bw / w, "h": bh / h, "surface": (y + bh / 2) / h < 0.25,
+                        "area": area}
+                if best is None or cand["surface"] and not best["surface"] or area > best["area"]:
+                    best = cand
+        if best:
+            if self.found is None:
+                best["since"] = ts - 35 * 60
+                self.found = best
+            else:
+                self.found.update({k: best[k] for k in ("x", "y", "w", "h", "surface")})
+        else:
+            self.found = None
+        return self.found
+
+
 class Danger:
     def __init__(self, core, cfg: DangerConfig):
         self.core = core
         self.cfg = cfg
         self.bubbles: dict[int, BubbleWatch] = {}
         self.surface: dict[int, SurfaceWatch] = {}
+        self.still_obj: dict[int, StillObjectWatch] = {}
         self.unwatched_since: dict[int, float] = {}
         self.last_periodic = 0.0
 
@@ -161,6 +237,12 @@ class Danger:
                     "danger", since=bw.low_since)
             elif change == "running":
                 self.core.health.set_external(f"bubbles:{tank.id}", False)
+
+        so = self.still_obj.get(tank.id)
+        if so is None:
+            so = self.still_obj[tank.id] = StillObjectWatch()
+        if usable and self.core.latest is not None:
+            so.add(ts, self.core.latest, scores.brightness, usable)
 
         sw = self.surface.get(tank.id)
         if sw is None:
@@ -200,6 +282,29 @@ class Danger:
         if now - self.last_periodic >= 300:
             self.last_periodic = now
             self._stillness(now)
+            self._still_objects(now)
+
+    def _still_objects(self, now: float) -> None:
+        c = self.core
+        tank = c.tank
+        if tank is None:
+            return
+        key = f"stillobj:{tank.id}"
+        dt = datetime.fromtimestamp(now)
+        day_start = datetime.strptime(self.cfg.day_start, "%H:%M").time()
+        day_end = datetime.strptime(self.cfg.day_end, "%H:%M").time()
+        so = self.still_obj.get(tank.id)
+        if so is None or not (day_start <= dt.time() <= day_end):
+            c.health.set_external(key, False)
+            return
+        found = so.check(now)
+        if found:
+            where = "floating still at the surface" if found["surface"] else "lying still in the open"
+            c.health.set_external(key, True,
+                                  f"Something fish sized has been {where} in {tank.name} for over half an hour. "
+                                  f"That can be a dead fish.", "note", since=found["since"])
+        else:
+            c.health.set_external(key, False)
 
     def _stillness(self, now: float) -> None:
         c = self.core

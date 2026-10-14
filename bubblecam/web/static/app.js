@@ -112,7 +112,7 @@ function spotState(s) {
   if (p.state === 'home') return { cls: 'home', text: `Home${since()}` };
   if (p.state === 'away') return { cls: 'away', text: `Out${since()}` };
   if (!s.has_areas && !s.has_home) return { cls: '', text: 'Not set up yet' };
-  if (s.moving) return { cls: 'moving', text: 'Moving now' };
+  if (s.moving) return { cls: 'moving', text: s.doing ? s.doing.replace(/^./, c => c.toUpperCase()) + ' now' : 'Moving now' };
   if (s.has_home && p.examples && (!p.examples.home || !p.examples.away)) return { cls: '', text: 'Tap to teach home and out' };
   return { cls: '', text: 'Quiet' };
 }
@@ -123,7 +123,11 @@ function spotLine(s) {
     if (s.first) line += ` (first seen ${clock(s.first)})`;
     return line;
   }
-  if (s.moving_minutes >= 1) return `${s.name} was moving for ${mins(s.moving_minutes)}${s.first ? ` (from ${clock(s.first)})` : ''}`;
+  if (s.moving_minutes >= 1) {
+    if (s.still_minutes >= 5 && s.travel_minutes >= 5) return `${s.name} was ${s.still_label} for ${mins(s.still_minutes)} and ${s.moving_label} for ${mins(s.travel_minutes)}`;
+    if (s.still_minutes >= 5 && s.still_minutes > s.moving_minutes * 0.7) return `${s.name} was ${s.still_label} for ${mins(s.still_minutes)}`;
+    return `${s.name} was moving for ${mins(s.moving_minutes)}${s.first ? ` (from ${clock(s.first)})` : ''}`;
+  }
   return `${s.name} stayed out of sight`;
 }
 
@@ -132,12 +136,14 @@ function nightLines(n) {
   const extra = [];
   if (n.feedings) extra.push(plural(n.feedings, 'feeding'));
   if (n.bursts) extra.push(plural(n.bursts, 'burst') + ' of activity');
+  if (n.chases) extra.push(plural(n.chases, 'chase') + ' while the tank was quiet');
   if (extra.length) lines.push(extra.join(', ').replace(/^./, c => c.toUpperCase()));
   if (!lines.length) lines.push(`Watched for ${Math.round(n.watched_hours)} h`);
   return lines;
 }
 
-const momentLabel = ev => ev.kind === 'spot' ? (ev.spot_name || 'Spotlight') : ev.kind === 'feeding' ? 'Feeding' : 'Burst';
+const momentLabel = ev => ev.kind === 'spot' ? (ev.spot_name || 'Spotlight') : ev.kind === 'feeding' ? 'Feeding'
+  : ev.kind === 'chase' ? (ev.detail === 'dart' ? 'Dart' : 'Chase') : 'Burst';
 
 // Tanks (home)
 
@@ -333,6 +339,13 @@ async function pageTank(arg) {
     } else if (!n.in_progress) {
       $('.tl', night).append(el('<span class="dim">The timelapse for this night isn\'t ready yet.</span>'));
     }
+    if (n.trails === 'ready') {
+      const b = el('<button class="btn">🐌 Slow movers\' paths</button>');
+      b.onclick = () => openSheet(`<h3>Slow movers, night of ${dayName(n.start)}</h3>
+        <p class="dim">Anything that stayed in roughly the same place minute after minute: snails, grazing, a shrimp on the move. Fast fish don't show.</p>
+        <img src="/api/tanks/${tank.id}/trails.png?date=${n.date}" style="width:100%;border-radius:var(--radius-sm)" alt="paths of slow movers">`);
+      $('.tl', night).append(b);
+    }
     const moms = (await api(`/api/moments?tank_id=${tank.id}&before=${n.end}&limit=60`)).filter(m => m.start_ts >= n.start && m.has_thumb);
     moms.sort((a, b) => (b.kind === 'spot') - (a.kind === 'spot') || b.peak - a.peak);
     const strip = $('.moments-strip', night);
@@ -367,7 +380,7 @@ function dayBar(card, tank) {
       <h3 class="grow" style="text-align:center" id="dlabel"></h3><button class="btn small" data-d="1" aria-label="Later night">›</button></div>
     <div class="daybar"><canvas></canvas></div>
     <div class="legend"><span><i style="background:var(--accent)"></i>Moving</span><span><i style="background:var(--warm)"></i>Out of home</span>
-      <span><i style="background:var(--feed)"></i>Feeding</span><span><i style="background:var(--burst)"></i>Burst</span>
+      <span><i style="background:var(--feed)"></i>Feeding</span><span><i style="background:var(--burst)"></i>Burst</span><span><i style="background:var(--chase)"></i>Chase</span>
       <span><i style="background:var(--line)"></i>Not watching this tank</span></div>
     <div class="preview" hidden><img alt="picture at this time"><div style="display:grid;gap:8px;align-content:start">
       <b id="ptime"></b><div class="dim" id="pmsg"></div><div class="row" id="pbtns"></div></div></div>
@@ -430,7 +443,7 @@ function dayBar(card, tank) {
       for (const ev of data.events) {
         const mine = lane.kind === 'spot' ? ev.kind === 'spot' && ev.spot_id === lane.id : ev.kind !== 'spot';
         if (!mine) continue;
-        const color = ev.kind === 'spot' ? css('--accent') : ev.kind === 'feeding' ? css('--feed') : css('--burst');
+        const color = ev.kind === 'spot' ? css('--accent') : ev.kind === 'feeding' ? css('--feed') : ev.kind === 'chase' ? css('--chase') : css('--burst');
         const a = x(Math.max(ev.start_ts, start)), b = x(Math.min(ev.end_ts || now, end));
         const w = Math.max(3, b - a);
         if (ev.wrong) { g.strokeStyle = css('--dim'); g.lineWidth = 1; g.strokeRect(a + .5, y + 8.5, w - 1, LANE - 17); }
@@ -590,7 +603,8 @@ async function pageMoments() {
     const dup = tanks.some(o => o.id !== t.id && o.spotlights.some(x => x.name === s.name));
     filters.push({ key: 'spot' + s.id, label: dup ? `${s.name} (${t.name})` : s.name, q: { spot_id: s.id } });
   }
-  filters.push({ key: 'feeding', label: 'Feeding', q: { kind: 'feeding' } }, { key: 'burst', label: 'Bursts', q: { kind: 'burst' } },
+  filters.push({ key: 'feeding', label: 'Feeding', q: { kind: 'feeding' } }, { key: 'chase', label: 'Chases', q: { kind: 'chase' } },
+    { key: 'burst', label: 'Bursts', q: { kind: 'burst' } },
     { key: 'night', label: 'At night', q: { night_only: true } }, { key: 'starred', label: '★ Kept', q: { starred: true } });
   for (const t of tags) filters.push({ key: 'tag:' + t.tag, label: '#' + t.tag, q: { tag: t.tag } });
   filters.push({ key: 'wrong', label: 'Marked wrong', q: { wrong: true } });
@@ -786,9 +800,21 @@ async function pageTrends() {
           <div class="dim">${s.has_home ? 'Minutes out of home each night' : 'Minutes moving each night'}</div><canvas class="chart"></canvas></div>`);
         out.append(card);
         barChart($('canvas', card), tr.nights.map(n => ({ label: n.night, value: (n.spots[s.id] || {})[key] || 0, marked: n.maintenance })), css('--accent'), v => mins(v));
+        if (tr.nights.some(n => ((n.spots[s.id] || {}).still_minutes || 0) >= 5)) {
+          const c2 = el(`<div class="card" style="display:grid;gap:8px"><div class="dim">${esc(s.name)}: minutes ${esc(s.still_label || 'busy in one place')} each night</div><canvas class="chart"></canvas></div>`);
+          out.append(c2);
+          barChart($('canvas', c2), tr.nights.map(n => ({ label: n.night, value: (n.spots[s.id] || {}).still_minutes || 0, marked: n.maintenance })), css('--warm'), v => mins(v));
+        }
       }
       const card = el(`<div class="card" style="display:grid;gap:8px"><h3>Whole tank</h3><div class="dim">How busy the tank was each night</div><canvas class="chart"></canvas></div>`);
       out.append(card);
+      const heat = el(`<div class="card" style="display:grid;gap:10px"><h3>Where things happen</h3>
+        <div class="dim">Movement over the last ${days} nights and days, brightest where there's most of it. A front view, so it says nothing about depth.</div>
+        <div class="row" style="align-items:flex-start"><div class="grow" style="min-width:260px"><div class="dim">At night</div>
+          <img src="/api/tanks/${tank.id}/heatmap.png?period=night&days=${days}" alt="night heatmap" style="width:100%;border-radius:var(--radius-sm)" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'dim',textContent:'Nothing recorded at night yet.'}))"></div>
+        <div class="grow" style="min-width:260px"><div class="dim">In the day</div>
+          <img src="/api/tanks/${tank.id}/heatmap.png?period=day&days=${days}" alt="day heatmap" style="width:100%;border-radius:var(--radius-sm)" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'dim',textContent:'Nothing recorded in the day yet.'}))"></div></div></div>`);
+      out.append(heat);
       barChart($('canvas', card), tr.nights.map(n => ({ label: n.night, value: (n.tank_activity || 0) * 1000, marked: n.maintenance })), css('--burst'), v => v.toFixed(0));
       out.append(el('<div class="legend"><span><i style="background:var(--line)"></i>Maintenance that night</span></div>'));
     }
@@ -867,9 +893,12 @@ async function pageSetup() {
       const ex = (live_s.presence || {}).examples || { home: 0, away: 0 };
       const row = el(`<div class="list-row"><input type="text" class="grow" value="${esc(s.name)}" aria-label="Name">
         <span class="dim">${s.areas.length ? plural(s.areas.length, 'area') : 'no areas yet'} · ${s.home ? `home box, taught ${ex.home} home / ${ex.away} out` : 'no home box'}</span>
+        <span class="dim" style="flex-basis:100%">Your words for it: busy in one place = <input type="text" data-l="still_label" value="${esc(s.still_label || '')}" maxlength="30" style="width:110px;padding:4px 8px"> ·
+          moving around = <input type="text" data-l="moving_label" value="${esc(s.moving_label || '')}" maxlength="30" style="width:110px;padding:4px 8px"></span>
         ${s.home ? '<button class="btn small" data-a="forget">Forget home lessons</button>' : ''}
         <button class="btn small" data-a="rm">Remove</button></div>`);
       $('input', row).onchange = e => attempt(() => send(`/api/spotlights/${s.id}`, 'PATCH', { name: e.target.value }));
+      $$('[data-l]', row).forEach(inp => { inp.onchange = () => attempt(() => send(`/api/spotlights/${s.id}`, 'PATCH', { [inp.dataset.l]: inp.value })); });
       row.onclick = e => attempt(async () => {
         if (e.target.dataset.a === 'forget' && confirm(`Forget what ${s.name}'s home looks like? You'll teach it again from the tank page.`)) {
           await send(`/api/spotlights/${s.id}/examples`, 'DELETE'); route();
@@ -1078,6 +1107,8 @@ async function pageAdvanced() {
     <tr><td>Exposure / gain</td><td class="num">${adv.camera.exposure} / ${adv.camera.gain}</td></tr>
     <tr><td>Video encoder</td><td class="num">${esc(adv.encoder || 'off')}</td></tr>
     <tr><td>Frames dropped</td><td class="num">${adv.dropped_frames}</td></tr>
+    <tr><td>Work per frame</td><td class="num">${adv.perf.loop_ms} ms of ${adv.perf.budget_ms} ms (analysis ${adv.perf.analyze_ms} ms)${adv.perf.stride > 1 ? `, analysing every ${adv.perf.stride} frames to keep up` : ''}</td></tr>
+    <tr><td>Pi load</td><td class="num">${adv.perf.cpu_load == null ? '' : Math.round(adv.perf.cpu_load * 100) + '% of all cores'}${adv.perf.temp_c ? `, ${Math.round(adv.perf.temp_c)}°C` : ''}</td></tr>
     </tbody></table><p class="dim">Exposure, gain and other hardware settings live in config.yaml on the Pi.</p></div>`));
 
   view.append(el(`<div class="card scroll-x"><h3 style="margin-bottom:8px">System history</h3><table><thead><tr><th>What</th><th>From</th><th>Until</th></tr></thead><tbody>
