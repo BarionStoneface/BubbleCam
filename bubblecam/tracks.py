@@ -197,10 +197,16 @@ class Behaviour:
 
     def update(self, ts: float, active: bool, centroid: tuple[float, float] | None) -> str:
         """Returns 'quiet', 'still' (busy in one place) or 'moving'."""
-        if not active or centroid is None:
+        if not active:
             self.pts.clear()
             self.last = None
             return "quiet"
+        if centroid is None:
+            # Active but no instant change this frame (a pause at a turn): keep what we know for a bit.
+            if self.last_ts is not None and ts - self.last_ts > 2.0:
+                self.pts.clear()
+                self.last = None
+            return self._judge(ts) if self.pts else "still"
         cx, cy = centroid
         if self.last is not None and self.last_ts is not None and ts - self.last_ts < 2.0:
             step = math.hypot(cx - self.last[0], cy - self.last[1])
@@ -210,9 +216,12 @@ class Behaviour:
                 self.distance += step
         self.last, self.last_ts = (cx, cy), ts
         self.pts.append((ts, cx, cy))
+        return self._judge(ts)
+
+    def _judge(self, ts: float) -> str:
         while self.pts and ts - self.pts[0][0] > self.window:
             self.pts.popleft()
-        if ts - self.pts[0][0] < self.window * 0.5:
+        if not self.pts or ts - self.pts[0][0] < self.window * 0.5:
             return "still"
         pts = list(self.pts)
         half = len(pts) // 2

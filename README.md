@@ -37,10 +37,18 @@ The app lives entirely on the Pi. Phones and tablets just open a page the Pi ser
 
 **Storage that keeps the good bits.** Raw footage is recorded continuously and the oldest goes first when space runs low. Each moment is cut into its own small file when it ends and kept 30 days; timelapses are kept 90 days. Anything starred or tagged is kept for good.
 
+**Chases.** At night, with the tank quiet, something suddenly tearing across it is a dart; with a second fish right behind, a chase. These become moments (with their own filter) and a line in the morning summary ("2 chases while the tank was quiet"), never an alert. Daytime zooming doesn't count: the tank has to be quiet by the clock and by its own movement.
+
+**Busy tanks.** A spotlighted animal's area only counts movement from slow movers. Each moving thing is followed for a couple of seconds; a pleco or shrimp covers well under a twentieth of the tank a second even when busy, a cruising guppy more. So fish passing through the pleco's area aren't the pleco. The same tracking gives each animal a reading of what it's doing: **busy in one place** (fanning, grazing) or **moving around** (foraging, wandering), in whatever words you give it in Setup. The morning summary then reads "Bamboo shrimp was fanning for 2 h 10 min and foraging for 35 min."
+
+**Slow movers' paths.** Each morning the night's proxy stream is sampled a minute apart. Anything found in roughly the same place minute after minute is a slow mover: snails on the glass, the pleco grazing, the shrimp on the move. Their paths are drawn over a picture of the empty tank, on the tank page under Last night.
+
+**Heatmaps.** Where movement happens, added up per tank over the last weeks, day and night separately, on the Trends page. A front view, so it says nothing about depth.
+
 **Danger watches.** The app reports and never advises, with one exception: something genuinely dangerous. Then it says what it saw and, in one line, what that can mean. Never what to do.
 
 * **Filter bubbles stopped.** Draw one box over a sponge filter's bubble stream (Draw boxes) and switch on "Tell me if the filter bubbles stop" in Setup. It learns what the running stream looks like under each lighting level, judges on the middle of the last 30 seconds so fish swimming through don't fool it, and alerts after 3 minutes of near stillness, even with notifications set to quiet. It holds off during maintenance, light switches, camera moves, and when the picture itself is frozen or black. If the camera is on another tank, the status dot says the bubbles aren't being watched.
-* **Fish crowding the surface** for 30 minutes, not after feeding ("That can mean low oxygen"), and **a tank much stiller than usual** for a daytime hour, compared with the same hours on previous days ("That can mean a heater or oxygen problem"). These two show on the status dot and in the morning summary but don't send alerts until they've been tuned on real footage.
+* **Fish crowding the surface** for 30 minutes, not after feeding ("That can mean low oxygen"), **a tank much stiller than usual** for a daytime hour, compared with the same hours on previous days ("That can mean a heater or oxygen problem"), and **something fish sized that appeared and hasn't moved** for over half an hour in daylight, floating at the surface or lying in the open ("That can be a dead fish"). These show on the status dot and in the morning summary but don't send alerts until they've been tuned on real footage.
 
 **Quiet by design.** Phone notifications (through the free ntfy app) default to one morning summary a day, plus one message if BubbleCam itself breaks: camera not sending pictures, picture frozen or black, recording stopped, USB stick missing, storage full. Each problem has to persist before it counts, and won't repeat within 6 hours. "An animal came out" and burst messages exist but are off unless you turn them on.
 
@@ -90,6 +98,20 @@ At the default quality, real time footage takes about 16 GB a day: a 64 GB stick
 5. Watch the live picture with boxes on: green boxes are what the detector sees moving. If sensor grain makes green speckles in the dark, raise `diff_threshold` in config.yaml. If shrimp set off the pleco's area, raise `min_blob_area`, or turn the tank's sensitivity down in Advanced.
 6. In the morning: last night's summary and timelapse on the tank page. Mark anything that's wrong; that's how it gets tuned.
 
+## Tuning on real footage
+
+The first nights are a test set. Note what really happened (the pleco out from 23:14 to 23:19, a feeding at 19:02, a chase at 01:40, two hours with nothing at all), save the tank's layout, and replay the footage through detection offline:
+
+```sh
+curl -s localhost:8080/api/tanks/1/layout > layout.json
+.venv/bin/python -m bubblecam.replay /mnt/bubblecam/data/rec/2026-10-14 --layout layout.json \
+    --labels labels.json --start 19:00 --end 09:00 --every 2
+```
+
+It prints every moment it found, what each animal was doing when, which labels it matched, what it missed and what it made up. Change a setting, replay, compare. Keep the labelled nights: `python -m bubblecam.replay --help` shows the label format, and anything that used to score well and stops doing so after a change is a regression.
+
+The **Advanced** page shows how often each kind of moment gets marked wrong, plus the work per frame and the Pi's load. If the Pi falls behind, the app analyses every second or third frame by itself and says so there; recording is never thinned.
+
 To set up a second tank, point the camera at it and tap "It's a new tank" on the home screen (or "Set up a new tank" in Setup).
 
 ## Development
@@ -111,10 +133,13 @@ Layout:
 * `timelapse.py`: speed curve and rendering
 * `storage.py`: cutting moments and cleaning up
 * `health.py`: system checks and watchdogs
-* `danger.py`: filter bubbles, surface crowding, daytime stillness
+* `danger.py`: filter bubbles, surface crowding, daytime stillness, still objects
+* `tracks.py`: short tracks, chases, busy in one place vs moving around
+* `maps.py`: heatmaps and slow movers' paths
+* `replay.py`: offline replay and scoring of footage
 * `summary.py`: nights and trends
 * `notify.py`: phone notifications
 * `core.py`: wiring
 * `web/`: the API and the screens, with all styling in the tokens at the top of `web/static/style.css`
 
-With `--synthetic`, setting `BUBBLECAM_SYNTH_CTRL` to a file containing `seed dx dy [feed] [nobubbles]` lets you switch the fake camera to another tank, shift it, set off a feeding rush, or stop the filter bubbles while the app runs.
+With `--synthetic`, setting `BUBBLECAM_SYNTH_CTRL` to a file containing `seed dx dy` plus any of `feed`, `nobubbles`, `night`, `chase`, `dead`, `fanning`, `foraging`, `nocam`, `freeze` drives the fake tank while the app runs: switch tank, shift the camera, feeding rush, filter stopped, lights off, a chase, a dead fish, what the shrimp does, camera unplugged, picture frozen.

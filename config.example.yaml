@@ -36,6 +36,10 @@ burst_events:
 feeding:
   top_share: 0.55         # feeding = a burst with most of the movement in the top quarter of the picture
 
+chase:
+  enabled: true           # darts and chases at night while the tank is quiet
+  speed: 0.5              # frame widths per second that counts as a dart
+
 danger:
   bubble_stop_seconds: 180   # bubbles near still this long = alert (switch on per tank in Setup)
   surface_minutes: 30        # fish crowding the surface this long (not after feeding) = note

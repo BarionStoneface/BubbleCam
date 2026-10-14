@@ -175,13 +175,14 @@ class SyntheticTank:
         if self.shrimp_mode == "foraging":
             px = px - int(140 * (0.5 + 0.5 * math.sin(t * 0.3)))     # slow walk back and forth, 7 cm or so
             py = py + int(20 * math.sin(t * 0.5))
-        cv2.ellipse(img, (px, py), (24, 7), 0, 0, 360, 140, -1)
+        sw, sh = int(w * 0.055), int(w * 0.014)                      # a 7 cm shrimp in a 60 cm tank
+        cv2.ellipse(img, (px, py), (sw, sh), 0, 0, 360, 140, -1)
         if self.shrimp_mode == "fanning":
             for k in range(4):                                        # fans flicking in place
                 ang = 30 * math.sin(t * 6 + k) - 60 + 25 * k
-                ex = px - 24 + int(18 * math.cos(math.radians(ang)))
-                ey = py + int(18 * math.sin(math.radians(ang)))
-                cv2.line(img, (px - 24, py), (ex, ey), 190, 2)
+                ex = px - sw + int(w * 0.03 * math.cos(math.radians(ang)))
+                ey = py + int(w * 0.03 * math.sin(math.radians(ang)))
+                cv2.line(img, (px - sw, py), (ex, ey), 190, max(2, w // 400))
         # Snail: along the front glass, slowly.
         if self.snail:                                                # about a centimetre a minute
             sx = int((t * 0.25) % (w * 0.6) + w * 0.2)
@@ -197,7 +198,7 @@ class SyntheticTank:
             pos = (home[0] - dx, home[1] + int(h * 0.08 * math.sin(p * math.pi)))
         else:
             pos = (home[0] + int(3 * math.sin(t * 0.5)), home[1])
-        cv2.ellipse(img, pos, (40, 14), 0, 0, 360, 12, -1)
+        cv2.ellipse(img, pos, (int(w * 0.07), int(w * 0.022)), 0, 0, 360, 12, -1)   # a 9 cm pleco
         if self.night:
             img = (img.astype(np.float32) * 0.45).astype(np.uint8)
         noise = self.rng.integers(0, 4, img.shape, dtype=np.uint8)
@@ -215,6 +216,7 @@ def _synthetic_frames(cfg: CameraConfig) -> Iterator[tuple[np.ndarray, float]]:
     ctrl = os.environ.get("BUBBLECAM_SYNTH_CTRL")
     seed, dx, dy = 1, 0, 0
     nocam = freeze = False
+    frozen = None
     period = 1.0 / cfg.fps
     start = time.time()
     next_t = start
@@ -252,7 +254,14 @@ def _synthetic_frames(cfg: CameraConfig) -> Iterator[tuple[np.ndarray, float]]:
         if nocam:
             continue                      # the camera is "unplugged": no frames at all
         tank = tanks.setdefault(seed, SyntheticTank(cfg.width, cfg.height, seed=seed))
-        frame = tank.frame(start if freeze else now - start)
+        if freeze:
+            # A stuck driver hands back the very same buffer every time, noise and all.
+            if frozen is None:
+                frozen = tank.frame(now - start)
+            frame = frozen
+        else:
+            frozen = None
+            frame = tank.frame(now - start)
         if dx or dy:
             M = np.float32([[1, 0, dx], [0, 1, dy]])
             frame = cv2.warpAffine(frame, M, (frame.shape[1], frame.shape[0]), borderMode=cv2.BORDER_REFLECT)

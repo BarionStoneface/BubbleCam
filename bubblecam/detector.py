@@ -101,10 +101,13 @@ class Detector:
         # Bubbles: plain frame to frame change inside the box. A running bubble stream never holds still;
         # the background model would slowly learn a constant stream as "normal", frame differences don't.
         box = self.bubble_box
-        if box is not None and self.prev is not None:
-            x0, y0, x1, y1 = box
-            d = cv2.absdiff(smallf[y0:y1, x0:x1], self.prev[y0:y1, x0:x1])
-            scores.bubbles = float((d > cfg.diff_threshold).mean()) if d.size else 0.0
+        instant = None
+        if self.prev is not None:
+            instant = cv2.absdiff(smallf, self.prev)
+            if box is not None:
+                x0, y0, x1, y1 = box
+                d = instant[y0:y1, x0:x1]
+                scores.bubbles = float((d > cfg.diff_threshold).mean()) if d.size else 0.0
         self.prev = smallf
 
         light_change = self.brightness is not None and abs(mean - self.brightness) > cfg.light_jump
@@ -142,15 +145,19 @@ class Detector:
             scores.settling = True
             return scores
         scores.top_share = float((moving & self.top_mask).sum()) / total if total else 0.0
+        # Where each animal is *right now*: the frame to frame change inside its areas. The background
+        # model's moving region trails behind a walking animal; the instant change doesn't.
+        now_mask = (instant > cfg.diff_threshold).astype(np.uint8) & valid if instant is not None else None
         for spot_id, m, count in watch:
             inside = moving & m
             hits = int(inside.sum())
             scores.spots[spot_id] = hits / count
-            if hits:
-                mo = cv2.moments(inside, binaryImage=True)
-                scores.centroids[spot_id] = (mo["m10"] / mo["m00"] / self.w, mo["m01"] / mo["m00"] / self.h)
-            else:
-                scores.centroids[spot_id] = None
+            scores.centroids[spot_id] = None
+            if hits and now_mask is not None:
+                here = now_mask & m
+                mo = cv2.moments(here, binaryImage=True)
+                if mo["m00"] >= cfg.min_blob_area:
+                    scores.centroids[spot_id] = (mo["m10"] / mo["m00"] / self.w, mo["m01"] / mo["m00"] / self.h)
         scores.zone = max(scores.spots.values(), default=0.0)
         for i in np.nonzero(keep)[0]:
             x, y, bw, bh = stats[i, :4]
