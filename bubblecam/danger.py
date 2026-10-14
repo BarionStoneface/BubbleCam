@@ -48,6 +48,7 @@ class BubbleWatch:
         self.ratio, self.stop_seconds = ratio, stop_seconds
         self.normals: dict[int, collections.deque[float]] = {}
         self.bucket = 0
+        self.bright_seen: dict[int, float] = {}       # typical brightness per bucket
         self.recent: collections.deque[float] = collections.deque(maxlen=BUBBLE_WINDOW_S)
         self.acc: list[float] = []
         self.second: int | None = None
@@ -63,6 +64,7 @@ class BubbleWatch:
             self.low_since = None
             return None
         bucket = int(brightness // BRIGHTNESS_BUCKET)
+        self.bright_seen[bucket] = 0.98 * self.bright_seen.get(bucket, brightness) + 0.02 * brightness
         if bucket != self.bucket:
             self.bucket = bucket
             self.recent.clear()
@@ -78,16 +80,31 @@ class BubbleWatch:
         self.second = sec
         return self._second(ts, value)
 
+    def _borrowed_normal(self) -> float | None:
+        """Until this lighting has been learned, borrow the closest learned lighting's normal, scaled
+        down by brightness (the bubbles' contrast drops with the light). So the filter dying a minute
+        after the lights go off still gets noticed."""
+        learned = [(b, q) for b, q in self.normals.items() if len(q) >= BUBBLE_LEARN_S]
+        if not learned:
+            return None
+        b, q = min(learned, key=lambda item: abs(item[0] - self.bucket))
+        ratio = self.bright_seen.get(self.bucket, 1.0) / max(self.bright_seen.get(b, 1.0), 1.0)
+        return float(np.median(q)) * min(1.0, max(0.3, ratio))
+
     def _second(self, ts: float, value: float) -> str | None:
         normal_q = self.normals.setdefault(self.bucket, collections.deque(maxlen=1800))
         if len(normal_q) < BUBBLE_LEARN_S:
             if value >= BUBBLE_FLOOR:
                 normal_q.append(value)
-            return None
+            borrowed = self._borrowed_normal()
+            if borrowed is None:
+                return None
+            normal = borrowed
+        else:
+            normal = float(np.median(normal_q))
         self.recent.append(value)
         if len(self.recent) < BUBBLE_WINDOW_S // 2:
             return None
-        normal = float(np.median(normal_q))
         low = float(np.median(self.recent)) < max(normal * self.ratio, BUBBLE_FLOOR)
         if low:
             if self.low_since is None:
@@ -97,7 +114,8 @@ class BubbleWatch:
                 return "stopped"
             return None
         self.low_since = None
-        normal_q.append(value)
+        if len(normal_q) >= BUBBLE_LEARN_S:
+            normal_q.append(value)
         if self.state != "running":
             was = self.state
             self.state = "running"

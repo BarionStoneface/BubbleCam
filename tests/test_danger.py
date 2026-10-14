@@ -76,3 +76,16 @@ def test_new_lighting_has_to_be_learned_first():
         out.append(bw.update(t + 0.5, 0.04, True, brightness=50))
         out.append(bw.update(t + 1.0, 0.04, True, brightness=50))
     assert "stopped" not in out
+
+
+def test_filter_dying_right_after_lights_off_is_still_noticed():
+    bw = BubbleWatch(ratio=0.35, stop_seconds=180)
+    for t in range(300):                                     # learned with the light on
+        bw.update(t + 0.5, 0.15, True, brightness=150)
+        bw.update(t + 1.0, 0.15, True, brightness=150)
+    out = []
+    for t in range(300, 340):                                # lights off, bubbles still going
+        out.append(bw.update(t + 0.5, 0.05, True, brightness=50))
+    for t in range(340, 700):                                # ...then they stop
+        out.append(bw.update(t + 0.5, 0.0, True, brightness=50))
+    assert "stopped" in out

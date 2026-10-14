@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import logging
 import threading
 import time
@@ -44,7 +45,8 @@ class MinuteStats:
         self.spot_still: dict[int, float] = {}
         self.spot_max: dict[int, float] = {}
         self.behaviour: dict[int, Behaviour] = {}
-        self.modes: dict[int, str] = {}          # latest 'quiet' / 'still' / 'moving' per animal
+        self.modes: dict[int, str] = {}          # 'quiet' / 'still' / 'moving' per animal, steadied over 10 s
+        self._mode_hist: dict[int, collections.deque] = {}
         self.maintenance = False
         self.last_ts: float | None = None
 
@@ -67,7 +69,14 @@ class MinuteStats:
             if b is None:
                 b = self.behaviour[spot_id] = Behaviour()
             mode = b.update(ts, active and not maintenance, scores.centroids.get(spot_id))
-            self.modes[spot_id] = mode
+            hist = self._mode_hist.setdefault(spot_id, collections.deque())
+            hist.append((ts, mode))
+            while hist and ts - hist[0][0] > 10:
+                hist.popleft()
+            counts = collections.Counter(m for _, m in hist)
+            busy = counts["still"] + counts["moving"]
+            self.modes[spot_id] = ("quiet" if busy < len(hist) * 0.3
+                                   else "still" if counts["still"] >= counts["moving"] else "moving")
             if active:
                 self.spot_moving[spot_id] = self.spot_moving.get(spot_id, 0.0) + dt
                 if mode == "still":
