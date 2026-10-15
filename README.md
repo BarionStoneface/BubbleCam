@@ -16,7 +16,7 @@ The app lives entirely on the Pi. Phones and tablets just open a page the Pi ser
 
 ## What it does
 
-**Tanks, and a camera that moves.** Each tank keeps its own boxes, animals, settings and history. The app recognises which tank the camera is looking at by matching distinctive points in the rocks, wood and gravel against reference pictures, so you can move the camera between tanks and it switches by itself. If the camera gets bumped, it measures exactly how far and moves the boxes to match. While it's unsure (the seconds after a move), it records but makes no events, so nothing gets filed against the wrong tank. If it doesn't recognise the view at all, the home screen asks which tank this is, or offers to set up a new one.
+**Tanks, and a camera that moves.** Each tank keeps its own boxes, animals, settings and history. Move the camera to the other tank and tap "The camera is on this one" on the Tanks screen; it never switches by itself and never asks. If the camera gets bumped, it measures how far by matching distinctive points in the rocks, wood and gravel against reference pictures, and moves the boxes to match.
 
 **Spotlight: who to watch.** Pick up to four animals per tank. Draw where each one hangs out, and its home if it has one (a cave mouth, a perch). Each gets its own moments, its own lane on the day bar, its own line in the morning summary, and its own timelapse option. Movement in an animal's area only counts once it lasts a few seconds, so a guppy passing through doesn't count but a pleco shuffling in fits and starts does. Spotlight knows animals by where they live and how they move, not by face, so it suits homebodies.
 

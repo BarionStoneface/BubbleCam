@@ -151,8 +151,6 @@ async function pageTanks() {
   setTitle('BubbleCam');
   const tanks = await api('/api/tanks');
   const wrap = el('<div style="display:grid;gap:var(--gap)"></div>');
-  const banner = el('<div class="banner" hidden></div>');
-  wrap.append(banner);
   if (!tanks.length) {
     wrap.append(el('<div class="empty">Getting set up. Your first tank appears here a few seconds after the camera starts.</div>'));
     view.append(wrap);
@@ -189,24 +187,6 @@ async function pageTanks() {
   }, 5000);
   return {
     leave: () => clearInterval(refresh),
-    onStatus: st => {
-      const unknown = st.view.status === 'unknown' && tanks.length;
-      banner.hidden = !unknown;
-      if (unknown && !banner.dataset.shown) {
-        banner.dataset.shown = '1';
-        banner.innerHTML = `<b>The camera doesn't recognise what it's looking at.</b>
-          <p class="dim" style="margin:4px 0 10px">If you moved it, tell it which tank this is.</p><div class="row"></div>`;
-        const row = $('.row', banner);
-        for (const t of tanks) {
-          const b = el(`<button class="btn small">It's ${esc(t.name)}</button>`);
-          b.onclick = () => attempt(async () => { await send(`/api/tanks/${t.id}/this-is`, 'POST'); flash(`Got it: ${t.name}`); route(); });
-          row.append(b);
-        }
-        const nb = el('<button class="btn small primary">It\'s a new tank</button>');
-        nb.onclick = () => newTankHere();
-        row.append(nb);
-      }
-    },
   };
 }
 
@@ -264,9 +244,7 @@ async function pageTank(arg) {
       if (!$('.note', liveBox)) liveBox.append(el('<div class="note"></div>'));
       const h = status && status.health;
       const noCam = h && h.items.some(i => i.kind === 'camera');
-      const unknown = status && status.view && status.view.status === 'unknown';
       $('.note', liveBox).textContent = noCam ? "No picture: the camera isn't sending anything. Check it's plugged into a blue USB port."
-        : unknown ? "The camera doesn't recognise what it's looking at. On the Tanks screen, tell it which tank this is."
         : 'The camera is pointed at another tank right now. This is the last picture from this one.';
     }
   }
@@ -936,7 +914,7 @@ async function pageSetup() {
     });
     view.append(spotCard);
   } else if (tanks.length) {
-    view.append(el('<div class="banner">The camera isn\'t on a tank it recognises, so boxes can\'t be drawn right now. Use "The camera is on this one" above, or set up a new tank.</div>'));
+    view.append(el('<div class="banner">Boxes are drawn on the live picture. Use "The camera is on this one" above first.</div>'));
   }
 
   const n = notify;
@@ -1104,7 +1082,7 @@ async function pageAdvanced() {
     </tbody></table></div>`));
 
   const v = adv.view;
-  const viewWords = { ok: 'Steady', adjusted: 'Shifted a little; boxes adjusted to match', moved_far: 'Moved a lot; boxes adjusted to match', unknown: "Doesn't recognise the view", moving: 'Being moved', starting: 'Starting up' };
+  const viewWords = { ok: 'Steady', adjusted: 'Shifted a little; boxes adjusted to match', moved_far: 'Moved a lot; boxes adjusted to match', moving: 'Being moved', starting: 'Starting up' };
   view.append(el(`<div class="card"><h3 style="margin-bottom:8px">Camera</h3><table><tbody>
     <tr><td>Looking at</td><td>${esc((tanks.find(t => t.id === v.tank_id) || {}).name || 'nothing it recognises')}</td></tr>
     <tr><td>Position</td><td>${esc(viewWords[v.status] || v.status)}</td></tr>

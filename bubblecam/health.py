@@ -41,8 +41,6 @@ CHECKS = {c.kind: c for c in [
     Check("lagging", "note", 120, "Recording is dropping frames"),
     Check("usb", "problem", 30, "The USB stick isn't connected, so footage is going to the SD card"),
     Check("full", "problem", 60, "Storage is full"),
-    Check("view", "note", 60, "The camera doesn't recognise what it's looking at"),
-    Check("moved", "note", 60, "The camera has moved a lot since the boxes were drawn"),
     Check("hot", "note", 300, "The Pi is running hot"),
 ]}
 
@@ -132,8 +130,6 @@ class Health:
             "lagging": bool(c.recorder) and c.drop_rate() > 0.05,
             "usb": on_root_device(c.data),
             "full": c.storage.low_space,
-            "view": c.view.state.status == "unknown" and bool(c.tanks.all()),
-            "moved": c.view.state.status == "moved_far",
         }
         temp = cpu_temp()
         t["hot"] = temp is not None and temp > 80

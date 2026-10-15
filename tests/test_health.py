@@ -38,9 +38,9 @@ def test_problem_needs_to_persist_and_alerts_once(tmp_path):
 
 def test_notes_do_not_alert(tmp_path):
     core, alerts = fake_core(tmp_path)
-    core.view.state.status = "unknown"
+    core.recorder, core.drop_rate = SimpleNamespace(last_write=time.time()), lambda: 0.2
     h = Health(core)
     now = time.time()
     h.check(now)
-    h.check(now + 61)
+    h.check(now + 121)
     assert h.status()["level"] == "note" and alerts == []

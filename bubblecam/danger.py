@@ -236,7 +236,7 @@ class Danger:
 
     def usable(self, now: float, scores) -> bool:
         c = self.core
-        return (not scores.settling and not c.view.state.unsure and scores.brightness >= 6
+        return (not scores.settling and scores.brightness >= 6
                 and now - c.last_change_wall < 10 and not c._in_maintenance(now))
 
     def update(self, tank, ts: float, scores) -> None:
@@ -286,7 +286,7 @@ class Danger:
                 self.bubbles.pop(tank.id, None)
                 c.health.set_external(key, False)
             # Someone relies on the bubble watch: say so when it can't see them.
-            in_view = tank.id == c.tank_id and not c.view.state.unsure
+            in_view = tank.id == c.tank_id
             ukey = f"unwatched:{tank.id}"
             if watching and not in_view:
                 self.unwatched_since.setdefault(tank.id, now)

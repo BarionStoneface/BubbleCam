@@ -85,7 +85,7 @@ def frames_from_recordings(folder: Path, start_ts: float | None, end_ts: float |
 
 
 class _FakeView:
-    state = type("S", (), {"unsure": False, "status": "ok"})()
+    state = type("S", (), {"status": "ok"})()
 
 
 class _FakeHealth:

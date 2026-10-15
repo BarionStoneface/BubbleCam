@@ -325,7 +325,7 @@ class App:
         while self.running:
             time.sleep(5)
             frame, tank_id = self.latest, self.tank_id
-            if tank_id == saved_for and time.time() - saved_at < 60 or self.view.state.unsure:
+            if tank_id == saved_for and time.time() - saved_at < 60:
                 continue
             if frame is not None and tank_id is not None:
                 saved_for, saved_at = tank_id, time.time()
@@ -384,7 +384,7 @@ class App:
 
                 tank = self.tank
                 maintenance = self._in_maintenance(now)
-                paused = maintenance or self.view.state.unsure
+                paused = maintenance
                 if n % self.stride == 0:
                     t_a = time.perf_counter()
                     scores = self.detector.analyze(frame, ts)

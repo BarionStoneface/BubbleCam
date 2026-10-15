@@ -1,19 +1,20 @@
-"""Which tank is the camera looking at, and has it shifted?
+"""Has the camera shifted on the tank it's watching?
 
-Each tank keeps a few reference pictures (taken when it was set up, plus extra ones under different
+Which tank the camera is on is told by hand: a tap on the Tanks screen. Nothing switches by itself.
+This only keeps the boxes lined up on that tank.
+
+The tank keeps a few reference pictures (taken when it was set up, plus extra ones under different
 lighting). Every few seconds the current picture is compared with them using ORB features: distinctive
-corners in rocks, wood, gravel and decorations. Matching corners between two pictures gives both an
-answer to "same tank?" (how many corners agree) and exactly how the camera moved (a shift, a small
-turn, a little zoom). Fish move around, but they're a small share of the corners and the matching
-ignores what doesn't fit.
+corners in rocks, wood, gravel and decorations. Matching corners between two pictures gives exactly
+how the camera moved (a shift, a small turn, a little zoom). Fish move around, but they're a small
+share of the corners and the matching ignores what doesn't fit.
 
-  same tank, tiny shift   -> nothing to do
-  same tank, moved a bit  -> boxes are moved to follow
-  same tank, moved a lot  -> boxes are moved, and Setup suggests checking them
-  another known tank      -> switch to that tank's settings
-  nothing matches         -> "I don't recognise this view"
+  tiny shift              -> nothing to do
+  moved a bit             -> boxes are moved to follow
+  moved a lot             -> boxes are moved, and Setup suggests checking them
+  nothing matches         -> stay put; the picture is dark, busy, or the camera is in someone's hands
   nothing matches, but the light just changed and nothing shook
-                          -> same tank, new lighting: learn this look as another reference
+                          -> new lighting: learn this look as another reference
 """
 
 from __future__ import annotations
@@ -41,8 +42,6 @@ MAX_REFS = 6
 NEW_REF_BRIGHTNESS = 30.0   # add a reference when lighting differs this much from all existing ones
 ADJUST_EPS = 0.004          # transform changes smaller than this are noise
 FAR_SHIFT = 0.2             # fraction of the frame
-SWITCH_CHECKS = 3
-UNKNOWN_CHECKS = 6
 
 _clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 _orb = cv2.ORB_create(nfeatures=N_FEATURES, fastThreshold=12)
@@ -139,12 +138,9 @@ class RefSet:
 class ViewState:
     tank_id: int | None = None
     A: np.ndarray = field(default_factory=lambda: IDENTITY.copy())
-    status: str = "starting"     # starting, ok, adjusted, moved_far, unknown, moving
+    status: str = "starting"     # starting, ok, adjusted, moved_far, moving
     inliers: int = 0
     checked_ts: float = 0.0
-    # True while the latest check didn't match the tank we think we're on. Events pause meanwhile, so
-    # nothing gets filed against the wrong tank's boxes in the seconds before a move is confirmed.
-    unsure: bool = False
 
 
 class ViewTracker:
@@ -160,9 +156,7 @@ class ViewTracker:
         self.paused_until = 0.0
         self.last_light_change = 0.0      # when the picture's brightness last jumped (lights switching)
         self.last_disturbed = 0.0         # when the whole picture last moved at once (camera being handled)
-        self._pending_tank: tuple[int | None, int] = (None, 0)
         self._pending_A: np.ndarray | None = None
-        self._misses = 0
         last = db.one("SELECT tank_id FROM views ORDER BY ts DESC LIMIT 1")
         if last and last["tank_id"] is not None:
             self.state.tank_id = last["tank_id"]
@@ -198,10 +192,8 @@ class ViewTracker:
             rs.save()
             self._save_align(tank_id, IDENTITY.copy())
             switched = self.state.tank_id != tank_id
-            self.state = ViewState(tank_id, IDENTITY.copy(), "ok", 0, time.time(), False)
+            self.state = ViewState(tank_id, IDENTITY.copy(), "ok", 0, time.time())
             self._set_view(tank_id)
-            self._misses = 0
-            self._pending_tank = (None, 0)
         self.on_change(tank_id, IDENTITY.copy(), switched)
 
     def forget(self, tank_id: int) -> None:
@@ -210,7 +202,7 @@ class ViewTracker:
             for p in (self.dir / str(tank_id) / "refs.npz", self._align_path(tank_id)):
                 p.unlink(missing_ok=True)
             if self.state.tank_id == tank_id:
-                self.state = ViewState(None, IDENTITY.copy(), "unknown")
+                self.state = ViewState(None, IDENTITY.copy(), "starting")
                 self._set_view(None)
         self.on_change(None, IDENTITY.copy(), True)
 
@@ -231,7 +223,7 @@ class ViewTracker:
                 self.check()
             except Exception:
                 log.exception("view check failed")
-            fast = time.time() < self.fast_until or self.state.status in ("unknown", "moving", "starting")
+            fast = time.time() < self.fast_until or self.state.status in ("moving", "starting")
             time.sleep(3.0 if fast else self.interval)
 
     def check(self, frame: np.ndarray | None = None, scores=None) -> ViewState:
@@ -250,6 +242,8 @@ class ViewTracker:
         cur = features(frame)
         results = []
         for tank_id in [r["id"] for r in self.db.query("SELECT id FROM tanks")]:
+            if tank_id != self.state.tank_id:
+                continue
             rs = self.refset(tank_id)
             if rs.refs:
                 n, A = rs.best(cur)
@@ -258,21 +252,10 @@ class ViewTracker:
         best = results[0] if results else (0, None, None)
         second = results[1][0] if len(results) > 1 else 0
         recognised = best[0] >= MIN_INLIERS and best[0] >= 1.5 * second
-        if len(results) == 1 and not recognised and self.state.tank_id == results[0][1]:
-            # One tank: there's nothing to tell it apart from. Stay on it whatever the picture does,
-            # and only use matching to follow small shifts when it works.
-            self.state.checked_ts, self.state.inliers = time.time(), best[0]
-            self.state.unsure = False
-            self._misses = 0
-            return self.state
-
         changed = None
         with self.lock:
             st = self.state
             st.checked_ts, st.inliers = time.time(), best[0]
-            st.unsure = not recognised or best[1] != st.tank_id
-            if st.unsure:
-                self.fast_until = time.time() + 60
             if not recognised and st.tank_id is not None and self._lights_just_changed():
                 # Cameras don't move by themselves. A brightness jump with no shaking is the lights, so
                 # this is the same tank wearing a new look: remember it, keep everything as it was.
@@ -281,37 +264,18 @@ class ViewTracker:
                     rs.refs.append((cur, st.A.copy()))
                     rs.save()
                     log.info("tank %s: lights changed; learned its new look (%d references)", st.tank_id, len(rs.refs))
-                st.unsure = False
-                self._misses = 0
                 st.status = "ok" if movement(st.A) <= 0.01 else st.status
             elif not recognised:
-                self._misses += 1
-                self._pending_tank = (None, 0)
-                if st.tank_id is not None and self._misses >= UNKNOWN_CHECKS:
-                    log.info("view no longer recognised")
-                    st.tank_id, st.A, st.status = None, IDENTITY.copy(), "unknown"
-                    self._set_view(None)
-                    changed = (None, st.A, True)
-                elif st.tank_id is None:
-                    st.status = "unknown"
+                # Not a view we know. Stay on the tank we're on: the picture may be dark, or busy, or
+                # the camera is being carried somewhere. If it lands on another tank we'll see it.
+                if st.status == "moving":
+                    st.status = "ok"
             else:
-                self._misses = 0
                 n, tank_id, A = best
                 if tank_id != st.tank_id:
-                    pend_id, count = self._pending_tank
-                    count = count + 1 if pend_id == tank_id else 1
-                    self._pending_tank = (tank_id, count)
-                    if count >= SWITCH_CHECKS or st.tank_id is None and count >= 2:
-                        log.info("now looking at tank %s", tank_id)
-                        st.tank_id, st.A = tank_id, A
-                        st.status = "moved_far" if movement(A) > FAR_SHIFT else "ok"
-                        self._save_align(tank_id, A)
-                        self._set_view(tank_id)
-                        self._pending_tank = (None, 0)
-                        self.fast_until = time.time() + 60
-                        changed = (tank_id, A, True)
+                    # Looks like another tank. Switching is a tap on the Tanks screen, never automatic.
+                    pass
                 else:
-                    self._pending_tank = (None, 0)
                     if np.abs(A - st.A).max() > ADJUST_EPS:
                         # Needs two checks in a row that agree, so one odd reading doesn't move the boxes.
                         if self._pending_A is not None and np.abs(A - self._pending_A).max() <= ADJUST_EPS * 2:
@@ -348,5 +312,4 @@ class ViewTracker:
     def status(self) -> dict:
         st = self.state
         return {"tank_id": st.tank_id, "status": st.status, "inliers": st.inliers, "checked": st.checked_ts,
-                "unsure": st.unsure,
                 "shift": round(movement(st.A), 3)}
