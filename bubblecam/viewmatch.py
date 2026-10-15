@@ -12,6 +12,8 @@ ignores what doesn't fit.
   same tank, moved a lot  -> boxes are moved, and Setup suggests checking them
   another known tank      -> switch to that tank's settings
   nothing matches         -> "I don't recognise this view"
+  nothing matches, but the light just changed and nothing shook
+                          -> same tank, new lighting: learn this look as another reference
 """
 
 from __future__ import annotations
@@ -156,6 +158,8 @@ class ViewTracker:
         self.refsets: dict[int, RefSet] = {}
         self.state = ViewState()
         self.paused_until = 0.0
+        self.last_light_change = 0.0      # when the picture's brightness last jumped (lights switching)
+        self.last_disturbed = 0.0         # when the whole picture last moved at once (camera being handled)
         self._pending_tank: tuple[int | None, int] = (None, 0)
         self._pending_A: np.ndarray | None = None
         self._misses = 0
@@ -235,7 +239,10 @@ class ViewTracker:
             frame, scores = self.frame_source()
         if frame is None or time.time() < self.paused_until:
             return self.state
+        if scores is not None and scores.light_change:
+            self.last_light_change = time.time()
         if scores is not None and (scores.disturbed or scores.tank > 0.3):
+            self.last_disturbed = time.time()
             self.state.status = "moving"
             self.fast_until = time.time() + 60
             return self.state
@@ -259,7 +266,18 @@ class ViewTracker:
             st.unsure = not recognised or best[1] != st.tank_id
             if st.unsure:
                 self.fast_until = time.time() + 60
-            if not recognised:
+            if not recognised and st.tank_id is not None and self._lights_just_changed():
+                # Cameras don't move by themselves. A brightness jump with no shaking is the lights, so
+                # this is the same tank wearing a new look: remember it, keep everything as it was.
+                rs = self.refset(st.tank_id)
+                if len(rs.refs) < MAX_REFS and len(cur.pts) >= 50:
+                    rs.refs.append((cur, st.A.copy()))
+                    rs.save()
+                    log.info("tank %s: lights changed; learned its new look (%d references)", st.tank_id, len(rs.refs))
+                st.unsure = False
+                self._misses = 0
+                st.status = "ok" if movement(st.A) <= 0.01 else st.status
+            elif not recognised:
                 self._misses += 1
                 self._pending_tank = (None, 0)
                 if st.tank_id is not None and self._misses >= UNKNOWN_CHECKS:
@@ -306,6 +324,10 @@ class ViewTracker:
         if changed:
             self.on_change(*changed)
         return self.state
+
+    def _lights_just_changed(self) -> bool:
+        now = time.time()
+        return now - self.last_light_change < 90 and now - self.last_disturbed > 90
 
     def _maybe_add_ref(self, tank_id: int, cur: Features, A: np.ndarray, n: int) -> None:
         rs = self.refset(tank_id)

@@ -76,3 +76,39 @@ def test_unsure_while_mismatched(tmp_path):
     assert vt.state.tank_id == ta.id and vt.state.unsure      # not switched yet, but events pause
     vt.check(a.frame(6))
     assert not vt.state.unsure
+
+
+def test_lights_changing_is_not_a_move(tmp_path):
+    """A brightness jump that makes the picture unrecognisable, with no shaking, means new lighting."""
+    from types import SimpleNamespace
+    db, store, vt, changes = make(tmp_path)
+    a = SyntheticTank(1280, 800, seed=1)
+    ta = store.create("A")
+    vt.anchor(ta.id, a.frame(1))
+    # Lights switch: the picture inverts (as different as it gets), with a light change flagged once.
+    inverted = lambda t: (255 - a.frame(t)).astype(np.uint8)
+    vt.check(inverted(5), SimpleNamespace(light_change=True, disturbed=False, tank=0.0))
+    for t in range(6, 20):
+        vt.check(inverted(t), SimpleNamespace(light_change=False, disturbed=False, tank=0.0))
+    assert vt.state.tank_id == ta.id and vt.state.status != "unknown"
+    assert len(vt.refset(ta.id).refs) == 2
+    # Later, under the new lighting, it recognises the tank outright, and still under the old.
+    vt.state.inliers = 0
+    vt.check(inverted(30))
+    assert vt.state.inliers >= 25
+    vt.check(a.frame(31))
+    assert vt.state.tank_id == ta.id
+
+
+def test_camera_handled_then_dark_is_still_unknown(tmp_path):
+    """Shaking the camera and then a light change doesn't get the free pass."""
+    from types import SimpleNamespace
+    db, store, vt, changes = make(tmp_path)
+    a, b = SyntheticTank(1280, 800, seed=1), SyntheticTank(1280, 800, seed=99)
+    ta = store.create("A")
+    vt.anchor(ta.id, a.frame(1))
+    vt.check(a.frame(2), SimpleNamespace(light_change=False, disturbed=True, tank=0.9))
+    vt.check(b.frame(3), SimpleNamespace(light_change=True, disturbed=False, tank=0.0))
+    for t in range(4, 14):
+        vt.check(b.frame(t))
+    assert vt.state.tank_id is None and vt.state.status == "unknown"
