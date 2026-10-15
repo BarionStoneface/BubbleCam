@@ -112,3 +112,13 @@ def test_camera_handled_then_dark_is_still_unknown(tmp_path):
     for t in range(4, 14):
         vt.check(b.frame(t))
     assert vt.state.tank_id is None and vt.state.status == "unknown"
+
+
+def test_single_tank_never_goes_unknown(tmp_path):
+    db, store, vt, changes = make(tmp_path)
+    a, stranger = SyntheticTank(1280, 800, seed=1), SyntheticTank(1280, 800, seed=99)
+    ta = store.create("Only tank")
+    vt.anchor(ta.id, a.frame(1))
+    for t in range(20):
+        vt.check(stranger.frame(t))
+    assert vt.state.tank_id == ta.id and not vt.state.unsure

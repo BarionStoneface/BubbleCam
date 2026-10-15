@@ -258,6 +258,13 @@ class ViewTracker:
         best = results[0] if results else (0, None, None)
         second = results[1][0] if len(results) > 1 else 0
         recognised = best[0] >= MIN_INLIERS and best[0] >= 1.5 * second
+        if len(results) == 1 and not recognised and self.state.tank_id == results[0][1]:
+            # One tank: there's nothing to tell it apart from. Stay on it whatever the picture does,
+            # and only use matching to follow small shifts when it works.
+            self.state.checked_ts, self.state.inliers = time.time(), best[0]
+            self.state.unsure = False
+            self._misses = 0
+            return self.state
 
         changed = None
         with self.lock:
