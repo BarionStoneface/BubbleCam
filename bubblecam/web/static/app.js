@@ -261,7 +261,13 @@ async function pageTank(arg) {
     } else {
       liveImg.src = `/api/tanks/${tank.id}/thumb.jpg?t=${Date.now()}`;
       boxesBtn.hidden = true;
-      if (!$('.note', liveBox)) liveBox.append(el('<div class="note">The camera is pointed at another tank right now. This is the last picture from this one.</div>'));
+      if (!$('.note', liveBox)) liveBox.append(el('<div class="note"></div>'));
+      const h = status && status.health;
+      const noCam = h && h.items.some(i => i.kind === 'camera');
+      const unknown = status && status.view && status.view.status === 'unknown';
+      $('.note', liveBox).textContent = noCam ? "No picture: the camera isn't sending anything. Check it's plugged into a blue USB port."
+        : unknown ? "The camera doesn't recognise what it's looking at. On the Tanks screen, tell it which tank this is."
+        : 'The camera is pointed at another tank right now. This is the last picture from this one.';
     }
   }
   boxesBtn.onclick = () => { overlay = !overlay; boxesBtn.textContent = overlay ? 'Boxes on' : 'Boxes off'; setStream(); };
@@ -284,7 +290,7 @@ async function pageTank(arg) {
   drawSpots(tank.spotlights);
 
   function teachSheet(s) {
-    if (!tank.live) return flash('The camera is pointed at another tank right now');
+    if (!tank.live) return flash("The camera isn't on this tank right now");
     if (!s.has_home) {
       openSheet(`<h3>${esc(s.name)}</h3><p>To tell when ${esc(s.name)} is home or out, draw a home box (a cave mouth or a perch) in Setup.</p>
         <a class="btn primary" href="#draw/${tank.id}" onclick="document.getElementById('sheet').close()">Draw boxes</a>`);

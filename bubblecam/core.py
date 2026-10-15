@@ -173,6 +173,15 @@ class App:
         if switched:
             self.detector.restart(time.time(), 10.0)
         self._apply_layout(reset_events=switched)
+        if tank_id is None and self.latest is not None:
+            # The camera is looking at something it doesn't know. If the only tank is still a blank one
+            # (nobody has drawn a box or named an animal yet), it was probably set up from whatever the
+            # camera first saw, so just follow the camera: this view becomes that tank.
+            tanks = self.tanks.all()
+            if len(tanks) == 1 and not tanks[0].spotlights and not tanks[0].setting("ignore") \
+                    and not tanks[0].setting("bubbles"):
+                log.info("following the camera: %s is now this view", tanks[0].name)
+                threading.Thread(target=self.view.anchor, args=(tanks[0].id, self.latest), daemon=True).start()
 
     def _apply_layout(self, reset_events: bool) -> None:
         tank, A = self.tank, self.A
