@@ -105,6 +105,26 @@ function openSheet(html) {
 }
 $('#sheet-close').onclick = () => $('#sheet').close();
 
+// The app's own "are you sure?" and "what's it called?" boxes. The browser's built in ones can
+// be swallowed in full screen mode, and look like a crash on a monitor.
+function ask(text, { yes = 'OK', no = 'Cancel', input = null } = {}) {
+  return new Promise(resolve => {
+    const d = $('#ask'), inp = $('#ask-input');
+    $('#ask-text').textContent = text;
+    $('#ask-yes').textContent = yes;
+    $('#ask-no').textContent = no;
+    inp.hidden = input === null;
+    inp.value = input || '';
+    const done = v => { d.close(); resolve(v); };
+    $('#ask-yes').onclick = () => done(input === null ? true : inp.value.trim());
+    $('#ask-no').onclick = () => done(input === null ? false : null);
+    d.oncancel = e => { e.preventDefault(); done(input === null ? false : null); };
+    inp.onkeydown = e => { if (e.key === 'Enter') $('#ask-yes').click(); };
+    d.showModal();
+    if (input !== null) inp.focus();
+  });
+}
+
 // Words for what an animal is doing
 
 function spotState(s) {
@@ -192,7 +212,7 @@ async function pageTanks() {
 }
 
 async function newTankHere() {
-  const name = prompt('What do you call this tank?', '');
+  const name = await ask('What do you call this tank?', { yes: 'Set it up', input: '' });
   if (name === null) return;
   await attempt(async () => {
     const t = await send('/api/tanks', 'POST', { name });
@@ -537,7 +557,7 @@ function openMoment(ev, onChange) {
     onChange && onChange(ev);
   });
   del.onclick = () => attempt(async () => {
-    if (!confirm('Delete this moment for good?')) return;
+    if (!await ask('Delete this moment for good?', { yes: 'Delete' })) return;
     await send(`/api/moments/${ev.id}`, 'DELETE');
     $('#player').close();
     onChange && onChange(ev, true);
@@ -573,6 +593,12 @@ function drawTags(ev, onChange) {
   }
 }
 $('#pclose').onclick = () => $('#player').close();
+$('#pvideo').onerror = () => {
+  const e = $('#pvideo').error;
+  const why = { 1: 'stopped', 2: "couldn't be fetched", 3: 'is damaged', 4: "is in a format this browser can't play" }[e && e.code] || 'failed';
+  $('#pinfo').textContent = `This video ${why} (code ${e ? e.code : '?'}). Download works regardless; try your phone or computer to watch it.`;
+};
+$('#pvideo').onloadedmetadata = () => { const t = $('#pinfo').textContent; if (t.startsWith('This video ')) $('#pinfo').textContent = ''; };
 $('#player').addEventListener('close', () => { $('#pvideo').pause(); $('#pvideo').removeAttribute('src'); $('#pvideo').load(); });
 
 // Moments
@@ -734,7 +760,7 @@ async function pageTimelapses() {
         const a = e.target.dataset.a;
         if (a === 'play') playUrl(`/api/timelapses/${r.id}.mp4`, title);
         if (a === 'star') { await send(`/api/timelapses/${r.id}/star?on=${!r.starred}`, 'POST'); load(); }
-        if (a === 'del' && confirm('Delete this timelapse?')) { await send(`/api/timelapses/${r.id}`, 'DELETE'); load(); }
+        if (a === 'del' && await ask('Delete this timelapse?', { yes: 'Delete' })) { await send(`/api/timelapses/${r.id}`, 'DELETE'); load(); }
       });
       list.append(card);
     }
@@ -853,7 +879,7 @@ async function pageSetup() {
     $('input', row).onchange = e => attempt(() => send(`/api/tanks/${t.id}`, 'PATCH', { name: e.target.value }));
     row.onclick = e => attempt(async () => {
       if (e.target.dataset.a === 'here') { await send(`/api/tanks/${t.id}/this-is`, 'POST'); flash(`Now watching ${t.name}`); route(); }
-      if (e.target.dataset.a === 'del' && confirm(`Delete ${t.name}? Its boxes and settings go. Recordings stay until they'd normally be cleared out.`)) {
+      if (e.target.dataset.a === 'del' && await ask(`Delete ${t.name}? Its boxes and settings go. Recordings stay until they'd normally be cleared out.`, { yes: 'Delete' })) {
         await send(`/api/tanks/${t.id}`, 'DELETE'); route();
       }
     });
@@ -885,10 +911,10 @@ async function pageSetup() {
       $('input', row).onchange = e => attempt(() => send(`/api/spotlights/${s.id}`, 'PATCH', { name: e.target.value }));
       $$('[data-l]', row).forEach(inp => { inp.onchange = () => attempt(() => send(`/api/spotlights/${s.id}`, 'PATCH', { [inp.dataset.l]: inp.value })); });
       row.onclick = e => attempt(async () => {
-        if (e.target.dataset.a === 'forget' && confirm(`Forget what ${s.name}'s home looks like? You'll teach it again from the tank page.`)) {
+        if (e.target.dataset.a === 'forget' && await ask(`Forget what ${s.name}'s home looks like? You'll teach it again from the tank page.`, { yes: 'Forget' })) {
           await send(`/api/spotlights/${s.id}/examples`, 'DELETE'); route();
         }
-        if (e.target.dataset.a === 'rm' && confirm(`Stop watching ${s.name}? Past moments stay.`)) {
+        if (e.target.dataset.a === 'rm' && await ask(`Stop watching ${s.name}? Past moments stay.`, { yes: 'Stop watching' })) {
           await send(`/api/spotlights/${s.id}`, 'DELETE'); route();
         }
       });
@@ -982,7 +1008,7 @@ async function pageSetup() {
       <button class="btn small" data-pi="reboot" data-ask="Restart the Pi? It takes about a minute to come back.">Restart the Pi</button>
       <button class="btn small warm" data-pi="shutdown" data-ask="Shut the Pi down? Unplug it once the green light stops blinking. Nothing records until it's turned on again.">Shut down the Pi</button>
     </div></div>`);
-  piCard.onclick = e => { const a = e.target.dataset.pi; if (a && confirm(e.target.dataset.ask)) piAction(a); };
+  piCard.onclick = async e => { const a = e.target.dataset.pi; if (a && await ask(e.target.dataset.ask, { yes: e.target.textContent })) piAction(a); };
   view.append(piCard);
 
   view.append(el('<a class="btn" href="#advanced" style="justify-self:start">Advanced settings and system details</a>'));
@@ -1007,10 +1033,12 @@ if (document.body.classList.contains('kiosk')) {
       <button class="btn" data-pi="reboot" data-ask="Restart the Pi?">Restart the Pi</button>
       <button class="btn warm" data-pi="shutdown" data-ask="Shut the Pi down? Nothing records until it's turned on again.">Shut down the Pi</button>
     </div>`);
-    body.onclick = e => {
+    body.onclick = async e => {
       if (e.target.dataset.go) location.href = e.target.dataset.go;
       const a = e.target.dataset.pi;
-      if (a && (!e.target.dataset.ask || confirm(e.target.dataset.ask))) { $('#sheet').close(); piAction(a); }
+      if (!a) return;
+      $('#sheet').close();
+      if (!e.target.dataset.ask || await ask(e.target.dataset.ask, { yes: e.target.textContent })) piAction(a);
     };
   };
   document.body.append(b);
