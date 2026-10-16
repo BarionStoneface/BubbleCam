@@ -75,7 +75,8 @@ Because the project is private on GitHub, the first part signs the Pi in: it sho
 * offers to set up the USB stick for footage (it asks first, and you have to type ERASE)
 * starts BubbleCam and makes it start on every boot
 * offers to set up Tailscale for your phone
-* offers to show the live view on the monitor at startup
+* offers to show the live view full screen on the monitor at startup (the ⋯ button in the corner has an exit, restart and shut down)
+* lets Setup turn on phone access and restart or shut down the Pi with a button
 
 At the end it prints the address to open on your phone. To update later, run `~/BubbleCam/deploy/install.sh` again.
 

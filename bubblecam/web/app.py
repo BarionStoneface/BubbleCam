@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .. import pi
 from ..core import App, encode_view
 from ..media import FrameReader
 from ..recorder import act_path, read_act
@@ -648,6 +649,26 @@ def create_app(core: App) -> FastAPI:
             "dropped_frames": core.recorder.dropped if core.recorder else 0,
             "perf": perf(),
         }
+
+    @api.get("/api/pi")
+    async def pi_info():
+        info = await run_in_threadpool(pi.tailscale, cfg.web.port)
+        info["qr"] = pi.qr_svg(info["url"]) if info["url"] and info["serving"] else None
+        return info
+
+    @api.post("/api/pi/phone-access")
+    async def pi_phone_access():
+        ok, out = await run_in_threadpool(pi.serve, cfg.web.port)
+        if not ok:
+            raise HTTPException(500, out or "tailscale serve failed")
+        return {"ok": True}
+
+    @api.post("/api/pi/{action}")
+    async def pi_action(action: str):
+        ok, out = await run_in_threadpool(pi.act, action)
+        if not ok:
+            raise HTTPException(500, out or f"{action} failed")
+        return {"ok": True}
 
     api.mount("/static", StaticFiles(directory=STATIC), name="static")
     return api

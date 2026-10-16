@@ -31,7 +31,7 @@ fi
 
 say "Setting up Python"
 python3 -m venv --system-site-packages "$REPO_DIR/.venv"
-"$REPO_DIR/.venv/bin/pip" install -q --upgrade fastapi uvicorn pyyaml
+"$REPO_DIR/.venv/bin/pip" install -q --upgrade fastapi uvicorn pyyaml qrcode
 note "done"
 
 say "Looking for the camera"
@@ -126,6 +126,10 @@ Nice=-5
 [Install]
 WantedBy=multi-user.target
 EOF
+# The app's Setup screen has restart and shut down buttons, and one that turns on phone access.
+# Exactly these commands, nothing else, run without a password.
+echo "$ME ALL=(root) NOPASSWD: /usr/bin/systemctl restart bubblecam, /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff, /usr/bin/tailscale serve *" | sudo tee /etc/sudoers.d/bubblecam >/dev/null
+sudo chmod 440 /etc/sudoers.d/bubblecam
 # If the whole Pi locks up, the hardware watchdog reboots it.
 sudo mkdir -p /etc/systemd/system.conf.d
 printf '[Manager]\nRuntimeWatchdogSec=15\n' | sudo tee /etc/systemd/system.conf.d/bubblecam-watchdog.conf >/dev/null
@@ -183,7 +187,7 @@ if [[ -d "$HOME/.config/labwc" ]] || command -v labwc >/dev/null; then
   elif ask "Show the live view full screen on this monitor every time the Pi starts?"; then
     mkdir -p "$(dirname "$AUTOSTART")"
     echo "$REPO_DIR/deploy/kiosk.sh &" >> "$AUTOSTART"
-    note "done; it starts next time you log in (press Alt+F4 to close it)"
+    note "done; it starts next time you log in (the menu button in the corner has an exit)"
   fi
 fi
 

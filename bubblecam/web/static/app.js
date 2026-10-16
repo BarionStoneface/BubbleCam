@@ -50,6 +50,7 @@ if (params.has('kiosk')) document.body.classList.add('kiosk');
 const routes = {
   tanks: pageTanks, tank: pageTank, moments: pageMoments, timelapses: pageTimelapses,
   trends: pageTrends, setup: pageSetup, draw: pageDraw, advanced: pageAdvanced,
+  live: () => pageTank('live'),      // #live: whatever tank the camera is on (the monitor opens this)
 };
 const TOP_LEVEL = ['tanks', 'moments', 'timelapses', 'trends'];
 
@@ -945,7 +946,74 @@ async function pageSetup() {
   $('#savecheck', notifyCard).onclick = () => attempt(async () => { await send('/api/notify', 'PUT', { checkin_url: $('#checkin', notifyCard).value }); flash('Saved'); });
   view.append(notifyCard);
 
+  const phoneCard = el('<div class="card"><h3>On your phone</h3><p class="dim" style="margin:6px 0 0">Checking…</p></div>');
+  view.append(phoneCard);
+  api('/api/pi').then(p => {
+    let html = '';
+    if (!p.installed) {
+      html = '<p class="dim" style="margin:6px 0 0">Tailscale isn\'t installed on this Pi. Run the installer again and say yes to phone access.</p>';
+    } else if (!p.online) {
+      html = '<p class="dim" style="margin:6px 0 0">The Pi isn\'t signed in to Tailscale. In a terminal on the Pi: <code>sudo tailscale up</code></p>';
+    } else if (!p.serving) {
+      html = `<p class="dim" style="margin:6px 0 10px">Signed in as <b>${esc(p.account || '?')}</b>. One more step makes the app reachable from your phone.</p>
+        <div class="row"><button class="btn primary" id="serve">Turn on phone access</button></div>`;
+    } else {
+      html = `<p class="dim" style="margin:6px 0 10px">1. Put the free <b>Tailscale</b> app on the phone and sign in as <b>${esc(p.account || 'the same account')}</b>.
+        2. Scan this, or open the address. 3. Add it to the home screen.</p>
+        <div class="row" style="align-items:flex-start">
+          ${p.qr ? `<div class="qr">${p.qr}</div>` : ''}
+          <div class="grow" style="min-width:200px"><code class="num" style="word-break:break-all">${esc(p.url)}</code>
+          <p class="dim" style="margin-top:8px">Works anywhere, home wifi or not.</p>
+          ${p.lan_url ? `<p class="dim">On the home wifi without Tailscale: <code class="num">${esc(p.lan_url)}</code></p>` : ''}</div>
+        </div>`;
+    }
+    phoneCard.innerHTML = `<h3>On your phone</h3>${html}`;
+    const b = $('#serve', phoneCard);
+    if (b) b.onclick = () => attempt(async () => {
+      b.disabled = true; b.textContent = 'Turning on…';
+      await send('/api/pi/phone-access', 'POST'); flash('Phone access is on'); route();
+    });
+  }).catch(() => { phoneCard.innerHTML = '<h3>On your phone</h3><p class="dim" style="margin:6px 0 0">Couldn\'t check Tailscale right now.</p>'; });
+
+  const piCard = el(`<div class="card"><h3>This Pi</h3>
+    <div class="row" style="margin-top:10px">
+      <a class="btn small" href="/?kiosk#live">Full screen live view</a>
+      <button class="btn small" data-pi="restart_app" data-ask="Restart BubbleCam? Recording pauses for about ten seconds.">Restart BubbleCam</button>
+      <button class="btn small" data-pi="reboot" data-ask="Restart the Pi? It takes about a minute to come back.">Restart the Pi</button>
+      <button class="btn small warm" data-pi="shutdown" data-ask="Shut the Pi down? Unplug it once the green light stops blinking. Nothing records until it's turned on again.">Shut down the Pi</button>
+    </div></div>`);
+  piCard.onclick = e => { const a = e.target.dataset.pi; if (a && confirm(e.target.dataset.ask)) piAction(a); };
+  view.append(piCard);
+
   view.append(el('<a class="btn" href="#advanced" style="justify-self:start">Advanced settings and system details</a>'));
+}
+
+function piAction(a) {
+  return attempt(async () => {
+    await send(`/api/pi/${a}`, 'POST');
+    flash({ exit_kiosk: 'Leaving the full screen view', restart_app: 'Restarting…', reboot: 'The Pi is restarting', shutdown: 'The Pi is shutting down' }[a] || 'Done');
+  });
+}
+
+// On the Pi's monitor the app runs full screen with no browser bars, so a small corner button is the
+// only way out.
+if (document.body.classList.contains('kiosk')) {
+  const b = el('<button class="kiosk-menu" type="button" aria-label="Menu">⋯</button>');
+  b.onclick = () => {
+    const body = openSheet(`<h3 style="margin-bottom:10px">BubbleCam</h3><div style="display:grid;gap:8px">
+      <button class="btn" data-go="/#tanks">Open the app on this screen</button>
+      <button class="btn" data-pi="exit_kiosk">Exit to the desktop</button>
+      <button class="btn" data-pi="restart_app" data-ask="Restart BubbleCam? Recording pauses for about ten seconds.">Restart BubbleCam</button>
+      <button class="btn" data-pi="reboot" data-ask="Restart the Pi?">Restart the Pi</button>
+      <button class="btn warm" data-pi="shutdown" data-ask="Shut the Pi down? Nothing records until it's turned on again.">Shut down the Pi</button>
+    </div>`);
+    body.onclick = e => {
+      if (e.target.dataset.go) location.href = e.target.dataset.go;
+      const a = e.target.dataset.pi;
+      if (a && (!e.target.dataset.ask || confirm(e.target.dataset.ask))) { $('#sheet').close(); piAction(a); }
+    };
+  };
+  document.body.append(b);
 }
 
 // Drawing boxes on the live picture
