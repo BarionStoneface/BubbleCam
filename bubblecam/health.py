@@ -102,7 +102,8 @@ class Health:
         while True:
             try:
                 self.check()
-                self.core.danger.periodic(time.time())
+                if self.core.mode != "free":
+                    self.core.danger.periodic(time.time())
                 if self._alive():
                     sd_notify("WATCHDOG=1")
                 self._checkin()
@@ -126,8 +127,8 @@ class Health:
             "camera": not frames_flowing,
             "frozen": frames_flowing and now - c.last_change_wall > 60,
             "black": frames_flowing and c.scores.brightness < 6,
-            "recording": bool(c.recorder) and frames_flowing and now - c.recorder.last_write > 30,
-            "lagging": bool(c.recorder) and c.drop_rate() > 0.05,
+            "recording": bool(c.active_recorder()) and frames_flowing and now - c.active_recorder().last_write > 30,
+            "lagging": bool(c.active_recorder()) and c.drop_rate() > 0.05,
             "usb": on_root_device(c.data),
             "full": c.storage.low_space,
         }

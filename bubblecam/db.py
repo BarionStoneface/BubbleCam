@@ -129,6 +129,20 @@ CREATE TABLE IF NOT EXISTS timelapses (
     auto INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS kv (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS free_sessions (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    dir TEXT NOT NULL,
+    start_ts REAL NOT NULL,
+    end_ts REAL,
+    timelapse_id INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS health_log (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -151,6 +165,22 @@ class DB:
         with self._lock:
             self._conn.executescript(SCHEMA)
             self._conn.execute(f"PRAGMA user_version={VERSION}")
+            # Columns added later; a database from before gets them without being set aside.
+            for table, column, decl in (("segments", "kept", "INTEGER DEFAULT 0"),
+                                        ("timelapses", "out_path", "TEXT")):
+                have = [r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")]
+                if column not in have:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+    # Settings that are a tap in the app rather than a line in config.yaml
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        v = self.value("SELECT value FROM kv WHERE key=?", (key,))
+        return default if v is None else v
+
+    def set(self, key: str, value: str) -> None:
+        self.execute("INSERT INTO kv(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                     (key, value))
 
     @staticmethod
     def _retire_old(path: Path) -> None:
@@ -186,9 +216,10 @@ class DB:
 
     # Segments
 
-    def add_segment(self, path: str, start_ts: float, fps: float) -> int:
-        return self.execute("INSERT INTO segments(path, start_ts, fps) VALUES (?,?,?)",
-                            (path, start_ts, fps)).lastrowid
+    def add_segment(self, path: str, start_ts: float, fps: float, kept: bool = False) -> int:
+        """kept: never cleared out to make room (a recording someone started on purpose)."""
+        return self.execute("INSERT INTO segments(path, start_ts, fps, kept) VALUES (?,?,?,?)",
+                            (path, start_ts, fps, int(kept))).lastrowid
 
     def close_segment(self, seg_id: int, end_ts: float, frames: int) -> None:
         self.execute("UPDATE segments SET end_ts=?, frames=? WHERE id=?", (end_ts, frames, seg_id))
@@ -211,11 +242,11 @@ class DB:
     # Timelapses
 
     def add_timelapse(self, tank_id: int | None, start_ts: float, end_ts: float, params: dict,
-                      created_ts: float, auto: bool = False) -> int:
+                      created_ts: float, auto: bool = False, out_path: str | None = None) -> int:
         return self.execute(
-            """INSERT INTO timelapses(tank_id, created_ts, start_ts, end_ts, params, status, auto)
-               VALUES (?,?,?,?,?, 'queued', ?)""",
-            (tank_id, created_ts, start_ts, end_ts, json.dumps(params), int(auto))).lastrowid
+            """INSERT INTO timelapses(tank_id, created_ts, start_ts, end_ts, params, status, auto, out_path)
+               VALUES (?,?,?,?,?, 'queued', ?, ?)""",
+            (tank_id, created_ts, start_ts, end_ts, json.dumps(params), int(auto), out_path)).lastrowid
 
     # Views
 

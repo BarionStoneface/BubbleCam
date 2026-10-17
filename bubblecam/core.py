@@ -17,6 +17,7 @@ from .danger import Danger
 from .db import DB
 from .detector import Detector, Scores
 from .events import EventManager
+from .free import FreeRecord
 from .health import Health
 from .maps import HeatMaps, TrailsWorker
 from .notify import Notifier
@@ -120,6 +121,9 @@ class App:
         self.storage = Storage(cfg.storage, self.db, self.data,
                                lambda: self.recorder.current_segment_id if self.recorder else None)
         self.timelapses = TimelapseWorker(self.db, cfg, self.tanks)
+        self.free = FreeRecord(cfg, self.db, self.data, cam.width, cam.height, cam.fps, self.timelapses)
+        # "tank": watch a tank (everything on). "free": a plain camera with a Record button.
+        self.mode = self.db.get("mode", "tank")
         self.presence = PresenceManager(cfg.presence, self.db, self.data)
         self.notifier = Notifier(cfg, self.db, self.data, lambda: self.latest, self._morning)
         self.stats = MinuteStats(self.db)
@@ -166,6 +170,8 @@ class App:
         return self.tanks.get(self.tank_id)
 
     def _view_frame(self):
+        if self.mode == "free":
+            return None, None          # no tank to line boxes up on
         return self.latest, self.scores
 
     def _view_changed(self, tank_id: int | None, A: np.ndarray, switched: bool) -> None:
@@ -301,6 +307,8 @@ class App:
                 self.notifier.animal_out(spot_id, spot.name, ts)
 
     def _morning(self) -> tuple[str, str, str | None]:
+        if self.mode == "free":
+            return "", "", None
         t = self.cfg.timelapse
         start, end = night_bounds(datetime.now(), t.night_start, t.night_end)
         summaries = [tank_summary(self.db, tank, start, end) for tank in self.tanks.all()]
@@ -346,8 +354,34 @@ class App:
         self.events.close_all(time.time())
         self.stats.flush()
         self.heat.save()
+        if self.free.active:
+            self.free.stop()
         if self.recorder:
             self.recorder.stop()
+
+    # Modes
+
+    def set_mode(self, mode: str) -> None:
+        if mode not in ("tank", "free") or mode == self.mode:
+            return
+        now = time.time()
+        if mode == "free":
+            self.events.close_all(now)
+            if self.recorder:
+                self.recorder.cut()
+        else:
+            if self.free.active:
+                self.free.stop()
+            self.detector.restart(now, 5.0)
+        self.mode = mode
+        self.db.set("mode", mode)
+        log.info("mode: %s", mode)
+
+    def active_recorder(self):
+        """The recorder that should be writing right now, if any."""
+        if self.mode == "free":
+            return self.free.recorder
+        return self.recorder
 
     def capture_alive(self) -> bool:
         return self.capture_thread is not None and self.capture_thread.is_alive()
@@ -377,7 +411,8 @@ class App:
                     if prev_tiny is None or not np.array_equal(tiny, prev_tiny):
                         self.last_change_wall = now
                     prev_tiny = tiny
-                if not self.tanks.all() and now - self.started > FIRST_TANK_AFTER:
+                free = self.mode == "free"
+                if not free and not self.tanks.all() and now - self.started > FIRST_TANK_AFTER:
                     self.latest = frame
                     log.info("first run: setting up Tank 1 from the current view")
                     self.new_tank_here("Tank 1")
@@ -389,21 +424,25 @@ class App:
                     t_a = time.perf_counter()
                     scores = self.detector.analyze(frame, ts)
                     self.analyze_ms = 0.95 * self.analyze_ms + 0.05 * (time.perf_counter() - t_a) * 1000
-                    self.events.update(scores, ts, frame, paused=paused)
-                    self.danger.update(tank, ts, scores)
-                    if not paused:
-                        self.presence.update(frame, ts, scores.settling)
-                        if tank is not None and not scores.settling:
-                            self.heat.add(tank.id, ts, scores.mask)
+                    if not free:
+                        self.events.update(scores, ts, frame, paused=paused)
+                        self.danger.update(tank, ts, scores)
+                        if not paused:
+                            self.presence.update(frame, ts, scores.settling)
+                            if tank is not None and not scores.settling:
+                                self.heat.add(tank.id, ts, scores.mask)
                 n += 1
-                self.stats.add(self.tank_id, ts, scores, tank.zone_threshold if tank else 1.0, maintenance)
-                if self.recorder:
-                    spots = np.zeros(4, np.float32)
-                    if tank:
-                        for s in tank.spotlights:
-                            spots[s.slot] = scores.spots.get(s.id, 0.0)
-                    self.recorder.submit(frame, ts, scores.tank, spots,
-                                         self.tank_id if self.tank_id is not None else -1)
+                if free:
+                    self.free.submit(frame, ts, scores.tank)
+                else:
+                    self.stats.add(self.tank_id, ts, scores, tank.zone_threshold if tank else 1.0, maintenance)
+                    if self.recorder:
+                        spots = np.zeros(4, np.float32)
+                        if tank:
+                            for s in tank.spotlights:
+                                spots[s.slot] = scores.spots.get(s.id, 0.0)
+                        self.recorder.submit(frame, ts, scores.tank, spots,
+                                             self.tank_id if self.tank_id is not None else -1)
                 with self.frame_cond:
                     self.latest, self.latest_ts, self.scores = frame, ts, scores
                     self.frame_cond.notify_all()

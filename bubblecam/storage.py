@@ -135,7 +135,7 @@ class Storage:
         need = self.cfg.min_free_gb * 1e9
         current = self.current_segment() or -1
         while self._free_bytes() < need:
-            seg = self.db.one("""SELECT * FROM segments WHERE end_ts IS NOT NULL AND id != ?
+            seg = self.db.one("""SELECT * FROM segments WHERE end_ts IS NOT NULL AND kept = 0 AND id != ?
                                  ORDER BY start_ts LIMIT 1""", (current,))
             if not seg:
                 break

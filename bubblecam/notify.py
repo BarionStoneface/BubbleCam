@@ -179,6 +179,8 @@ class Notifier:
 
     def morning_summary(self, force: bool = False) -> None:
         title, body, image_path = self.morning()
+        if not body:
+            return
         image = Path(image_path).read_bytes() if image_path and Path(image_path).exists() else None
         self.send(title, body, image, tags="sunrise", force=force)
 

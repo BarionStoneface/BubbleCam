@@ -47,6 +47,14 @@ class LayoutIn(BaseModel):
     spotlights: list[SpotLayout] = []
 
 
+class ModeIn(BaseModel):
+    mode: str
+
+
+class FreeIn(BaseModel):
+    name: str = ""
+
+
 class TankIn(BaseModel):
     name: str = ""
 
@@ -168,7 +176,9 @@ def create_app(core: App) -> FastAPI:
             "tank_motion": core.scores.tank,
             "settling": core.scores.settling,
             "maintenance_until": core.maintenance_until(core.tank_id),
-            "recording": core.recorder is not None,
+            "mode": core.mode,
+            "free": core.free.status(),
+            "recording": core.active_recorder() is not None,
             "encoder": core.recorder.encoder if core.recorder else None,
             "disk_free_gb": round(disk.free / 1e9, 1),
             "disk_total_gb": round(disk.total / 1e9, 1),
@@ -543,9 +553,10 @@ def create_app(core: App) -> FastAPI:
 
     @api.get("/api/timelapses")
     def timelapses(tank_id: int | None = None):
-        sql, args = "SELECT tl.*, t.name AS tank_name FROM timelapses tl LEFT JOIN tanks t ON t.id = tl.tank_id", ()
+        sql, args = ("SELECT tl.*, t.name AS tank_name FROM timelapses tl LEFT JOIN tanks t ON t.id = tl.tank_id"
+                     " WHERE tl.out_path IS NULL"), ()
         if tank_id is not None:
-            sql += " WHERE tl.tank_id = ?"
+            sql += " AND tl.tank_id = ?"
             args = (tank_id,)
         rows = db.query(sql + " ORDER BY tl.start_ts DESC, tl.id DESC LIMIT 100", args)
         for r in rows:
@@ -649,6 +660,65 @@ def create_app(core: App) -> FastAPI:
             "dropped_frames": core.recorder.dropped if core.recorder else 0,
             "perf": perf(),
         }
+
+    # Modes and free recording
+
+    @api.get("/api/mode")
+    def get_mode():
+        return {"mode": core.mode}
+
+    @api.put("/api/mode")
+    def put_mode(body: ModeIn):
+        if body.mode not in ("tank", "free"):
+            raise HTTPException(400, "mode is tank or free")
+        core.set_mode(body.mode)
+        return {"mode": core.mode}
+
+    @api.get("/api/free")
+    def free_list():
+        return {"status": core.free.status(), "mode": core.mode, "sessions": core.free.sessions()}
+
+    @api.post("/api/free/start")
+    def free_start(body: FreeIn | None = None):
+        if core.mode != "free":
+            core.set_mode("free")
+        return core.free.start(body.name if body else "")
+
+    @api.post("/api/free/stop")
+    def free_stop():
+        return core.free.stop()
+
+    @api.get("/api/free/{sid}/part/{n}.mp4")
+    def free_part(sid: int, n: int):
+        p = core.free.part_path(sid, n)
+        if not p:
+            raise HTTPException(404, "no such part")
+        return FileResponse(p, media_type="video/mp4", filename=f"{p.parent.name}_part{n + 1}.mp4")
+
+    @api.get("/api/free/{sid}/timelapse.mp4")
+    def free_timelapse(sid: int):
+        p = core.free.timelapse_path(sid)
+        if not p:
+            raise HTTPException(404, "no timelapse yet")
+        return FileResponse(p, media_type="video/mp4", filename=f"{p.parent.name}_timelapse.mp4")
+
+    @api.post("/api/free/{sid}/timelapse")
+    def free_make_timelapse(sid: int):
+        tl = core.free.make_timelapse(sid)
+        if tl is None:
+            raise HTTPException(400, "too short for a timelapse, or still recording")
+        return {"timelapse_id": tl}
+
+    @api.patch("/api/free/{sid}")
+    def free_rename(sid: int, body: FreeIn):
+        core.free.rename(sid, body.name)
+        return {"ok": True}
+
+    @api.delete("/api/free/{sid}")
+    def free_delete(sid: int):
+        if not core.free.delete(sid):
+            raise HTTPException(404, "no such recording")
+        return {"ok": True}
 
     @api.get("/api/pi")
     async def pi_info():

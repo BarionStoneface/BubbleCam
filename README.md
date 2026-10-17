@@ -16,6 +16,10 @@ The app lives entirely on the Pi. Phones and tablets just open a page the Pi ser
 
 ## What it does
 
+**Two modes, one switch.** *Tank watch* is everything below. *Free record* makes the camera a plain camera: a live picture, a Record button, and a timelapse of each recording made when it stops. Recordings go in their own folders under `free/`, named by date and whatever you called them, and are never cleared out to make room. No tank, no animals, no alerts in that mode. The switch sits in the header on every screen.
+
+**The Pi's own screen.** With a monitor plugged in, the Pi shows a dashboard: the live picture large, the clock, what the tank is doing right now, the latest moments, the Record button in Free record, and system status. Tap the picture for full screen; the ⋯ button in the corner exits to the desktop or shuts the Pi down.
+
 **Tanks, and a camera that moves.** Each tank keeps its own boxes, animals, settings and history. Move the camera to the other tank and tap "The camera is on this one" on the Tanks screen; it never switches by itself and never asks. If the camera gets bumped, it measures how far by matching distinctive points in the rocks, wood and gravel against reference pictures, and moves the boxes to match.
 
 **Spotlight: who to watch.** Pick up to four animals per tank. Draw where each one hangs out, and its home if it has one (a cave mouth, a perch). Each gets its own moments, its own lane on the day bar, its own line in the morning summary, and its own timelapse option. Movement in an animal's area only counts once it lasts a few seconds, so a guppy passing through doesn't count but a pleco shuffling in fits and starts does. Spotlight knows animals by where they live and how they move, not by face, so it suits homebodies.

@@ -15,7 +15,8 @@ def fake_core(tmp_path):
         view=SimpleNamespace(state=SimpleNamespace(status="ok")),
         tanks=SimpleNamespace(all=lambda: [1]),
         notifier=SimpleNamespace(system_alert=lambda m, s: alerts.append(m), state={}),
-        drop_rate=lambda: 0.0, capture_alive=lambda: True)
+        drop_rate=lambda: 0.0, capture_alive=lambda: True, mode="tank", danger=SimpleNamespace(periodic=lambda now: None))
+    core.active_recorder = lambda: core.recorder
     return core, alerts
 
 

@@ -191,10 +191,14 @@ def render(db: DB, cfg: Config, tl_id: int, tanks=None) -> None:
         db.execute("UPDATE timelapses SET status='failed', error='no footage in that range' WHERE id=?", (tl_id,))
         return
 
-    out_dir = cfg.data_path / "timelapses"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    name = datetime.fromtimestamp(row["start_ts"]).strftime("%Y-%m-%d_%H%M")
-    out = out_dir / f"{tl_id}_{name}.mp4"
+    if row.get("out_path"):
+        out = Path(row["out_path"])
+        out.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        out_dir = cfg.data_path / "timelapses"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        name = datetime.fromtimestamp(row["start_ts"]).strftime("%Y-%m-%d_%H%M")
+        out = out_dir / f"{tl_id}_{name}.mp4"
     w, h = probe_size(segments[picks[0].seg]["path"])
     enc = detect_encoder(cfg.record.encoder)
     proc = subprocess.Popen(
@@ -253,8 +257,8 @@ class TimelapseWorker:
         threading.Thread(target=self._run, name="timelapse", daemon=True).start()
 
     def queue(self, tank_id: int | None, start_ts: float, end_ts: float, params: TimelapseParams,
-              auto: bool = False) -> int:
-        tl_id = self.db.add_timelapse(tank_id, start_ts, end_ts, asdict(params), time.time(), auto)
+              auto: bool = False, out_path: str | None = None) -> int:
+        tl_id = self.db.add_timelapse(tank_id, start_ts, end_ts, asdict(params), time.time(), auto, out_path)
         self.wake.set()
         return tl_id
 

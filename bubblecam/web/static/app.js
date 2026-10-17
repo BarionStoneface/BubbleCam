@@ -45,17 +45,37 @@ let status = null;
 let page = null;           // { onStatus?, leave? }
 const view = $('#view');
 const params = new URLSearchParams(location.search);
-if (params.has('kiosk')) document.body.classList.add('kiosk');
+if (params.has('kiosk')) { document.body.classList.add('kiosk'); document.documentElement.dataset.theme = 'dark'; }  // the monitor is always dark
 
 const routes = {
   tanks: pageTanks, tank: pageTank, moments: pageMoments, timelapses: pageTimelapses,
   trends: pageTrends, setup: pageSetup, draw: pageDraw, advanced: pageAdvanced,
-  live: () => pageTank('live'),      // #live: whatever tank the camera is on (the monitor opens this)
+  live: () => pageTank('live'),      // #live: whatever tank the camera is on, full screen on the monitor
+  free: pageFree, recordings: pageRecordings, dash: pageDash,
 };
-const TOP_LEVEL = ['tanks', 'moments', 'timelapses', 'trends'];
+const TOP_LEVEL = ['tanks', 'moments', 'timelapses', 'trends', 'free', 'recordings', 'dash'];
+let mode = 'tank';
+
+function applyMode(m) {
+  mode = m;
+  document.body.dataset.mode = m;
+  $$('#mode button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+  $$('#tabs a').forEach(a => { a.hidden = a.dataset.mode !== m; });
+}
+$('#mode').onclick = e => {
+  const m = e.target.dataset.m;
+  if (!m || m === mode) return;
+  attempt(async () => {
+    await send('/api/mode', 'PUT', { mode: m });
+    applyMode(m);
+    location.hash = m === 'free' ? '#free' : '#tanks';
+    flash(m === 'free' ? 'Free record: just a camera now' : 'Tank watch is back on');
+  });
+};
 
 async function route() {
-  const [name, arg] = (location.hash.slice(1) || (document.body.classList.contains('kiosk') ? 'tank/live' : 'tanks')).split('/');
+  const home = document.body.classList.contains('kiosk') ? 'dash' : mode === 'free' ? 'free' : 'tanks';
+  const [name, arg] = (location.hash.slice(1) || home).split('/');
   if (page && page.leave) page.leave();
   page = null;
   if ($('#sheet').open) $('#sheet').close();
@@ -77,6 +97,7 @@ function stopStreams() { $$('img[data-stream]').forEach(img => { img.src = ''; }
 async function pollStatus() {
   try {
     status = await api('/api/status');
+    if (status.mode !== mode) applyMode(status.mode);
     const h = status.health;
     const btn = $('#health');
     btn.className = 'health ' + h.level;
@@ -271,6 +292,7 @@ async function pageTank(arg) {
   }
   boxesBtn.onclick = () => { overlay = !overlay; boxesBtn.textContent = overlay ? 'Boxes on' : 'Boxes off'; setStream(); };
   setStream();
+  if (document.body.classList.contains('kiosk')) liveImg.onclick = () => { location.hash = '#dash'; };
 
   function drawSpots(list) {
     spots.innerHTML = '';
@@ -1003,6 +1025,7 @@ async function pageSetup() {
 
   const piCard = el(`<div class="card"><h3>This Pi</h3>
     <div class="row" style="margin-top:10px">
+      <a class="btn small" href="/?kiosk#dash">Monitor dashboard</a>
       <a class="btn small" href="/?kiosk#live">Full screen live view</a>
       <button class="btn small" data-pi="restart_app" data-ask="Restart BubbleCam? Recording pauses for about ten seconds.">Restart BubbleCam</button>
       <button class="btn small" data-pi="reboot" data-ask="Restart the Pi? It takes about a minute to come back.">Restart the Pi</button>
@@ -1027,6 +1050,7 @@ if (document.body.classList.contains('kiosk')) {
   const b = el('<button class="kiosk-menu" type="button" aria-label="Menu">⋯</button>');
   b.onclick = () => {
     const body = openSheet(`<h3 style="margin-bottom:10px">BubbleCam</h3><div style="display:grid;gap:8px">
+      <button class="btn" data-go="/?kiosk#dash">Dashboard</button>
       <button class="btn" data-go="/#tanks">Open the app on this screen</button>
       <button class="btn" data-pi="exit_kiosk">Exit to the desktop</button>
       <button class="btn" data-pi="restart_app" data-ask="Restart BubbleCam? Recording pauses for about ten seconds.">Restart BubbleCam</button>
@@ -1197,5 +1221,199 @@ async function pageAdvanced() {
 }
 
 // Start
+
+
+// ---------- Free record: the camera as a plain camera
+
+const gb = b => b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`;
+const hms = s => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return (h ? h + ':' : '') + String(m).padStart(h ? 2 : 1, '0') + ':' + String(x).padStart(2, '0'); };
+
+function recordControls(compact = false) {
+  // The Record / Stop button and its status line, shared by the Free screen and the dashboard.
+  const box = el(`<div class="rec-box${compact ? ' compact' : ''}">
+    <button class="rec-btn" type="button" aria-label="Record"><span></span></button>
+    <div class="grow"><div class="rec-title">Not recording</div><div class="dim rec-info">Tap to start. Each recording goes in its own folder and is kept until you delete it.</div></div>
+    ${compact ? '' : '<input type="text" class="rec-name" placeholder="Name it (optional)" maxlength="40">'}
+  </div>`);
+  const btn = $('.rec-btn', box), title = $('.rec-title', box), info = $('.rec-info', box), name = $('.rec-name', box);
+  let busy = false;
+  function draw(st) {
+    const f = st && st.free;
+    const on = !!(f && f.active);
+    box.classList.toggle('on', on);
+    if (on) {
+      title.textContent = `Recording · ${hms(f.seconds)}`;
+      info.textContent = `${gb(f.bytes)} so far${f.dropped ? ` · ${f.dropped} frames dropped` : ''}`;
+      if (name) name.hidden = true;
+    } else {
+      title.textContent = 'Not recording';
+      info.textContent = compact ? 'Tap to start' : 'Tap to start. Each recording goes in its own folder and is kept until you delete it.';
+      if (name) name.hidden = false;
+    }
+  }
+  btn.onclick = () => attempt(async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      if (box.classList.contains('on')) { await send('/api/free/stop', 'POST'); flash('Stopped. Making the timelapse in the background.'); }
+      else { await send('/api/free/start', 'POST', { name: name ? name.value : '' }); if (name) name.value = ''; flash('Recording'); }
+      await pollStatus();
+    } finally { busy = false; }
+  });
+  draw(status);
+  return { box, draw };
+}
+
+async function pageFree() {
+  setTitle('Free record');
+  const liveBox = el(`<div class="live"><img data-stream alt="live picture"></div>`);
+  $('img', liveBox).src = `/stream.mjpg?overlay=0&width=960&t=${Date.now()}`;
+  const rec = recordControls();
+  const note = el(`<div class="card dim">No tank, no animals, no alerts in this mode. The live picture is always on; recording only when you press the button.
+    A timelapse of each recording is made when it stops. Switch back to <b>Tank</b> at the top to watch a tank again.</div>`);
+  view.append(liveBox, rec.box, note);
+  if (document.body.classList.contains('kiosk')) $('img', liveBox).onclick = () => { location.hash = '#dash'; };
+  return { onStatus: st => rec.draw(st) };
+}
+
+function playParts(urls, title, info) {
+  playUrl(urls[0], title, info);
+  const v = $('#pvideo');
+  let i = 0;
+  v.onended = () => { if (++i < urls.length) { v.src = urls[i]; v.play().catch(() => {}); } };
+  $('#player').addEventListener('close', () => { v.onended = null; }, { once: true });
+}
+
+async function pageRecordings() {
+  setTitle('Recordings');
+  const list = el('<div style="display:grid;gap:var(--gap)"></div>');
+  view.append(list);
+  async function load() {
+    const data = await api('/api/free');
+    list.innerHTML = '';
+    if (!data.sessions.length) {
+      list.append(el('<div class="empty">Nothing recorded yet. Press the red button on the Camera screen.</div>'));
+      return;
+    }
+    for (const s of data.sessions) {
+      const tl = s.timelapse;
+      const tlText = s.live ? '' : tl === 'done' ? 'Timelapse' : tl === 'rendering' ? `Making timelapse… ${Math.round((s.timelapse_progress || 0) * 100)}%`
+        : tl === 'queued' ? 'Timelapse queued' : tl === 'failed' ? 'Timelapse failed; try again' : s.seconds < 20 ? '' : 'Make a timelapse';
+      const card = el(`<div class="card rec-card${s.live ? ' live' : ''}">
+        <div class="row"><input type="text" class="grow rec-rename" value="${esc(s.name)}" aria-label="Name"><span class="dim num">${dayTime(s.start_ts)}</span></div>
+        <div class="dim">${s.live ? '<b style="color:var(--bad)">● Recording now</b> · ' : ''}${hms(s.seconds)} · ${gb(s.bytes)} · ${s.parts.length} part${s.parts.length === 1 ? '' : 's'} · folder free/${esc(s.folder)}</div>
+        <div class="row">
+          <button class="btn small primary" data-a="play" ${s.parts.length ? '' : 'disabled'}>▶ Play</button>
+          ${tlText ? `<button class="btn small" data-a="tl" ${tl === 'done' || (!tl || tl === 'failed') ? '' : 'disabled'}>${tl === 'done' ? '▶ ' : ''}${tlText}</button>` : ''}
+          <span class="grow"></span>
+          ${s.parts.length ? `<button class="btn small" data-a="dl">Download</button>` : ''}
+          ${s.live ? '' : '<button class="btn small" data-a="del">Delete</button>'}
+        </div></div>`);
+      $('.rec-rename', card).onchange = e => attempt(() => send(`/api/free/${s.id}`, 'PATCH', { name: e.target.value }));
+      card.onclick = e => {
+        const a = e.target.dataset.a;
+        if (!a) return;
+        attempt(async () => {
+          if (a === 'play') playParts(s.parts.map(p => `/api/free/${s.id}/part/${p.n}.mp4`), s.name, `${dayTime(s.start_ts)} · ${hms(s.seconds)}`);
+          if (a === 'tl' && tl === 'done') playUrl(`/api/free/${s.id}/timelapse.mp4`, `${s.name} · timelapse`, dayTime(s.start_ts));
+          if (a === 'tl' && tl !== 'done') { await send(`/api/free/${s.id}/timelapse`, 'POST'); flash('Making it'); load(); }
+          if (a === 'dl') {
+            const links = s.parts.map(p => `<a class="btn small" href="/api/free/${s.id}/part/${p.n}.mp4" download>Part ${p.n + 1} · ${hms(p.seconds)}</a>`).join('');
+            openSheet(`<h3>${esc(s.name)}</h3><p class="dim">Full speed video, in parts of up to ten minutes.${tl === 'done' ? ' And the timelapse.' : ''}</p>
+              <div class="row">${links}${tl === 'done' ? `<a class="btn small" href="/api/free/${s.id}/timelapse.mp4" download>Timelapse</a>` : ''}</div>`);
+          }
+          if (a === 'del' && await ask(`Delete "${s.name}" and its folder for good?`, { yes: 'Delete' })) { await send(`/api/free/${s.id}`, 'DELETE'); load(); }
+        });
+      };
+      list.append(card);
+    }
+  }
+  await load();
+  const timer = setInterval(() => { if (list.querySelector('.rec-card.live, [data-a=tl]:disabled')) load(); }, 5000);
+  return { leave: () => clearInterval(timer) };
+}
+
+// ---------- Monitor dashboard (the Pi's own screen)
+
+async function pageDash() {
+  setTitle('BubbleCam');
+  const kiosk = document.body.classList.contains('kiosk');
+  const dash = el(`<div class="dash">
+    <div class="dash-live"><img data-stream alt="live picture"><div class="dash-badge"></div></div>
+    <aside class="dash-side">
+      <div class="dash-clock"><div class="time"></div><div class="date dim"></div></div>
+      <div class="card dash-now"><div class="row"><h3 class="grow dash-where"></h3><span class="tag dash-mode"></span></div><div class="dash-lines"></div></div>
+      <div class="card dash-rec" hidden></div>
+      <div class="card dash-moments" hidden><div class="row" style="margin-bottom:8px"><h3 class="grow">Latest moments</h3><a href="/#moments" class="dim">All</a></div><div class="moments-strip"></div></div>
+      <div class="card dash-sys"><div class="row"><span class="dot"></span><b class="grow dash-health">All good</b><span class="dim dash-disk"></span></div></div>
+      <div class="dash-actions">
+        <button class="btn" data-m="tank">Tank watch</button><button class="btn" data-m="free">Free record</button>
+        <a class="btn" href="/#tanks">Open the app</a>
+      </div>
+    </aside></div>`);
+  view.append(dash);
+  const img = $('img', dash);
+  img.src = `/stream.mjpg?overlay=0&width=1280&t=${Date.now()}`;
+  img.onclick = () => { location.hash = mode === 'free' ? '#free' : '#live'; };
+  const rec = recordControls(true);
+  $('.dash-rec', dash).append(rec.box);
+  dash.querySelector('.dash-actions').onclick = e => { const m = e.target.dataset.m; if (m && m !== mode) $('#mode').querySelector(`[data-m=${m}]`).click(); };
+
+  function tick() {
+    const now = new Date();
+    $('.time', dash).textContent = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    $('.date', dash).textContent = now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' });
+  }
+  tick();
+  const clockTimer = setInterval(tick, 10000);
+
+  let lastMoments = 0;
+  async function moments() {
+    const ms = await api('/api/moments?limit=3');
+    const strip = $('.dash-moments .moments-strip', dash);
+    $('.dash-moments', dash).hidden = !ms.length;
+    strip.innerHTML = '';
+    for (const m of ms) {
+      const b = el(`<button type="button">${m.has_thumb ? `<img src="/api/moments/${m.id}/thumb.jpg" alt="">` : '<div class="noimg"></div>'}<span>${esc(momentLabel(m))} · ${clock(m.start_ts)}</span></button>`);
+      b.onclick = () => openMoment(m);
+      strip.append(b);
+    }
+  }
+
+  function draw(st) {
+    const free = st.mode === 'free';
+    $$('.dash-actions [data-m]', dash).forEach(b => b.classList.toggle('on', b.dataset.m === st.mode));
+    $('.dash-mode', dash).textContent = free ? 'Free record' : 'Tank watch';
+    $('.dash-rec', dash).hidden = !free;
+    $('.dash-moments', dash).hidden = free || $('.dash-moments', dash).hidden;
+    const badge = $('.dash-badge', dash);
+    const lines = $('.dash-lines', dash);
+    if (free) {
+      $('.dash-where', dash).textContent = 'Camera';
+      badge.textContent = st.free && st.free.active ? `● REC ${hms(st.free.seconds)}` : 'LIVE';
+      badge.classList.toggle('rec', !!(st.free && st.free.active));
+      lines.innerHTML = '<div class="dim">Tap the picture for full screen.</div>';
+      rec.draw(st);
+    } else {
+      $('.dash-where', dash).textContent = st.tank ? st.tank.name : 'No tank yet';
+      badge.textContent = 'LIVE';
+      badge.classList.remove('rec');
+      const m = st.tank_motion || 0;
+      const busy = st.settling ? 'Settling after a change' : m > 0.05 ? 'Busy' : m > 0.012 ? 'Some movement' : 'Quiet';
+      let html = `<div><b>${busy}</b>${st.maintenance_until ? ` <span style="color:var(--warm)">· maintenance until ${clock(st.maintenance_until)}</span>` : ''}</div>`;
+      for (const s of st.spotlights || []) { const w = spotState(s); html += `<div><span class="dot ${w.cls}"></span> ${esc(s.name)} <span class="dim">${esc(w.text)}</span></div>`; }
+      if (st.bubbles && st.bubbles !== 'no box') html += `<div><span class="dot ${st.bubbles === 'stopped' ? 'stopped' : st.bubbles === 'running' ? 'home' : ''}"></span> Filter bubbles <span class="dim">${esc(st.bubbles)}</span></div>`;
+      lines.innerHTML = html;
+      if (Date.now() - lastMoments > 30000) { lastMoments = Date.now(); moments().catch(() => {}); }
+    }
+    const h = st.health;
+    $('.dash-health', dash).textContent = h.level === 'ok' ? (st.recording ? 'All good · recording' : 'All good') : h.items.map(i => i.message).join(' · ');
+    $('.dash-sys .dot', dash).className = 'dot ' + (h.level === 'ok' ? 'home' : h.level === 'note' ? 'away' : 'stopped');
+    $('.dash-disk', dash).textContent = `${st.disk_free_gb} GB free`;
+  }
+  if (status) draw(status);
+  return { onStatus: draw, leave: () => clearInterval(clockTimer) };
+}
 
 pollStatus().then(route);

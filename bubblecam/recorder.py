@@ -66,9 +66,9 @@ def raw_encoder_cmd(path: Path, width: int, height: int, fps: float, encoder: st
 
 class _Segment:
     def __init__(self, rec_dir: Path, start_ts: float, width: int, height: int, fps: float,
-                 encoder: str, bitrate: str, db: DB):
+                 encoder: str, bitrate: str, db: DB, flat: bool = False, kept: bool = False):
         day = datetime.fromtimestamp(start_ts)
-        folder = rec_dir / day.strftime("%Y-%m-%d")
+        folder = rec_dir if flat else rec_dir / day.strftime("%Y-%m-%d")
         folder.mkdir(parents=True, exist_ok=True)
         stem = day.strftime("%H%M%S")
         self.path = folder / f"{stem}.mp4"
@@ -86,7 +86,7 @@ class _Segment:
         self.frames = 0
         self.last_ts = start_ts
         self.db = db
-        self.seg_id = db.add_segment(str(self.path), start_ts, fps)
+        self.seg_id = db.add_segment(str(self.path), start_ts, fps, kept)
         # Best frame of the current second, waiting to go to the proxy.
         self.bucket: int | None = None
         self.best: tuple[float, float, int, float, np.ndarray] | None = None
@@ -138,9 +138,12 @@ class _Segment:
 class Recorder:
     """Takes frames on a queue so a slow disk never stalls the camera or the detector."""
 
-    def __init__(self, cfg: RecordConfig, rec_dir: Path, width: int, height: int, fps: float, db: DB):
+    def __init__(self, cfg: RecordConfig, rec_dir: Path, width: int, height: int, fps: float, db: DB,
+                 flat: bool = False, kept: bool = False):
+        """flat: segments go straight into rec_dir, not a folder per day. kept: never cleared out."""
         self.cfg = cfg
         self.rec_dir = rec_dir
+        self.flat, self.kept = flat, kept
         self.width, self.height, self.fps = width, height, fps
         self.db = db
         self.encoder = detect_encoder(cfg.encoder)
@@ -170,12 +173,17 @@ class Recorder:
                 continue
             if item is None:
                 break
+            if item == "cut":
+                if self.segment:
+                    self.segment.close()
+                    self.segment = None
+                continue
             frame, ts, tank, spots, view = item
             if self.segment is None or ts - self.segment.start_ts >= seg_len:
                 if self.segment:
                     self.segment.close()
                 self.segment = _Segment(self.rec_dir, ts, self.width, self.height, self.fps,
-                                        self.encoder, self.cfg.bitrate, self.db)
+                                        self.encoder, self.cfg.bitrate, self.db, self.flat, self.kept)
             try:
                 self.segment.write(frame, ts, tank, spots, view)
                 self.last_write = time.time()
@@ -189,6 +197,10 @@ class Recorder:
         if self.segment:
             self.segment.close()
             self.segment = None
+
+    def cut(self) -> None:
+        """Finish the current segment now (recording is pausing)."""
+        self.q.put("cut")
 
     def stop(self) -> None:
         self.q.put(None)
