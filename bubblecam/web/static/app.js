@@ -62,6 +62,37 @@ function applyMode(m) {
   $$('#mode button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
   $$('#tabs a').forEach(a => { a.hidden = a.dataset.mode !== m; });
 }
+applyMode('tank');      // hide the other mode's tabs straight away; the first status poll corrects it
+
+// Full screen for any live picture. Real full screen where the browser allows it (Android, computers);
+// on iPhone, which doesn't for pictures, the picture covers the whole page instead. Tap to leave.
+function goFullscreen(box) {
+  const exit = () => {
+    $$('.fs-btn', box).forEach(b => { b.textContent = '⛶ Full screen'; });
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    box.classList.remove('fs'); document.body.classList.remove('immersive');
+  };
+  if (box.classList.contains('fs') || document.fullscreenElement) return exit();
+  box.classList.add('fs'); document.body.classList.add('immersive');
+  $$('.fs-btn', box).forEach(b => { b.textContent = '✕ Exit full screen'; });
+  const req = box.requestFullscreen || box.webkitRequestFullscreen;
+  if (req) {
+    Promise.resolve(req.call(box)).then(() => {
+      try { screen.orientation.lock('landscape').catch(() => {}); } catch (e) {}
+    }).catch(() => {});
+  }
+  const onFs = () => { if (!document.fullscreenElement) { box.classList.remove('fs'); document.body.classList.remove('immersive'); document.removeEventListener('fullscreenchange', onFs); } };
+  setTimeout(() => document.addEventListener('fullscreenchange', onFs), 300);
+  box.addEventListener('click', function once(e) {
+    if (e.target.closest('.tools') && !e.target.closest('.fs-btn')) return;
+    if (e.target.closest('.fs-btn')) return;           // the button's own handler toggles
+    box.removeEventListener('click', once); exit();
+  });
+}
+addEventListener('keydown', e => { if (e.key === 'Escape') { const b = $('.fs'); if (b && !document.fullscreenElement) { b.classList.remove('fs'); document.body.classList.remove('immersive'); } } });
+addEventListener('hashchange', () => { $$('.fs').forEach(b => b.classList.remove('fs')); document.body.classList.remove('immersive'); if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); });
+const fsButton = box => { const b = el('<button class="chip fs-btn" type="button" aria-label="Full screen">⛶ Full screen</button>'); b.onclick = e => { e.stopPropagation(); goFullscreen(box); }; return b; };
+
 $('#mode').onclick = e => {
   const m = e.target.dataset.m;
   if (!m || m === mode) return;
@@ -81,6 +112,7 @@ async function route() {
   if ($('#sheet').open) $('#sheet').close();
   stopStreams();
   view.innerHTML = '';
+  view.classList.toggle('wide', name === 'dash');
   $$('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === name || (name === 'tank' && a.dataset.tab === 'tanks')));
   $('#back').hidden = TOP_LEVEL.includes(name);
   const fn = routes[name] || pageTanks;
@@ -292,7 +324,8 @@ async function pageTank(arg) {
   }
   boxesBtn.onclick = () => { overlay = !overlay; boxesBtn.textContent = overlay ? 'Boxes on' : 'Boxes off'; setStream(); };
   setStream();
-  if (document.body.classList.contains('kiosk')) liveImg.onclick = () => { location.hash = '#dash'; };
+  $('.tools', liveBox).append(fsButton(liveBox));
+  if (document.body.classList.contains('kiosk')) liveImg.onclick = () => { if (!liveBox.classList.contains('fs')) location.hash = '#dash'; };
 
   function drawSpots(list) {
     spots.innerHTML = '';
@@ -485,7 +518,7 @@ function dayBar(card, tank) {
     });
     // Hour labels
     g.fillStyle = css('--dim'); g.font = '11px ' + css('--font');
-    for (let hr = 0; hr <= 24; hr += 3) {
+    for (let hr = 0; hr <= 24; hr += (W < 520 ? 6 : 3)) {
       const ts = start + hr * 3600;
       const label = new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric' });
       const tx = Math.min(Math.max(0, x(ts) - 12), W - 30);
@@ -926,8 +959,8 @@ async function pageSetup() {
       const ex = (live_s.presence || {}).examples || { home: 0, away: 0 };
       const row = el(`<div class="list-row"><input type="text" class="grow" value="${esc(s.name)}" aria-label="Name">
         <span class="dim">${s.areas.length ? plural(s.areas.length, 'area') : 'no areas yet'} · ${s.home ? `home box, taught ${ex.home} home / ${ex.away} out` : 'no home box'}</span>
-        <span class="dim" style="flex-basis:100%">Your words for it: busy in one place = <input type="text" data-l="still_label" value="${esc(s.still_label || '')}" maxlength="30" style="width:110px;padding:4px 8px"> ·
-          moving around = <input type="text" data-l="moving_label" value="${esc(s.moving_label || '')}" maxlength="30" style="width:110px;padding:4px 8px"></span>
+        <span class="dim" style="flex-basis:100%">Your words for it: busy in one place = <input type="text" data-l="still_label" value="${esc(s.still_label || '')}" maxlength="30" style="width:min(170px,100%);padding:6px 9px"> ·
+          moving around = <input type="text" data-l="moving_label" value="${esc(s.moving_label || '')}" maxlength="30" style="width:min(170px,100%);padding:6px 9px"></span>
         ${s.home ? '<button class="btn small" data-a="forget">Forget home lessons</button>' : ''}
         <button class="btn small" data-a="rm">Remove</button></div>`);
       $('input', row).onchange = e => attempt(() => send(`/api/spotlights/${s.id}`, 'PATCH', { name: e.target.value }));
@@ -1267,13 +1300,14 @@ function recordControls(compact = false) {
 
 async function pageFree() {
   setTitle('Free record');
-  const liveBox = el(`<div class="live"><img data-stream alt="live picture"></div>`);
+  const liveBox = el(`<div class="live"><img data-stream alt="live picture"><div class="tools"></div></div>`);
   $('img', liveBox).src = `/stream.mjpg?overlay=0&width=960&t=${Date.now()}`;
+  $('.tools', liveBox).append(fsButton(liveBox));
   const rec = recordControls();
   const note = el(`<div class="card dim">No tank, no animals, no alerts in this mode. The live picture is always on; recording only when you press the button.
     A timelapse of each recording is made when it stops. Switch back to <b>Tank</b> at the top to watch a tank again.</div>`);
   view.append(liveBox, rec.box, note);
-  if (document.body.classList.contains('kiosk')) $('img', liveBox).onclick = () => { location.hash = '#dash'; };
+  if (document.body.classList.contains('kiosk')) $('img', liveBox).onclick = () => { if (!liveBox.classList.contains('fs')) location.hash = '#dash'; };
   return { onStatus: st => rec.draw(st) };
 }
 
@@ -1355,7 +1389,8 @@ async function pageDash() {
   view.append(dash);
   const img = $('img', dash);
   img.src = `/stream.mjpg?overlay=0&width=1280&t=${Date.now()}`;
-  img.onclick = () => { location.hash = mode === 'free' ? '#free' : '#live'; };
+  const liveWrap = $('.dash-live', dash);
+  img.onclick = () => { if (!liveWrap.classList.contains('fs')) goFullscreen(liveWrap); };
   const rec = recordControls(true);
   $('.dash-rec', dash).append(rec.box);
   dash.querySelector('.dash-actions').onclick = e => { const m = e.target.dataset.m; if (m && m !== mode) $('#mode').querySelector(`[data-m=${m}]`).click(); };

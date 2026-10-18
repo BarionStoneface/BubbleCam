@@ -58,7 +58,7 @@ h3 { font-size: var(--text-lg); }
        padding: calc(10px + env(safe-area-inset-top)) var(--pad) 10px; background: var(--bg);
        border-bottom: 1px solid var(--line); }
 .top h1 { font-size: var(--text-lg); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.back { background: none; border: 0; font-size: 22px; padding: 0 6px 0 0; cursor: pointer; }
+.back { background: none; border: 0; font-size: 24px; min-width: 40px; min-height: 40px; margin-left: -8px; cursor: pointer; }
 .health { display: flex; align-items: center; gap: 7px; background: none; border: 1px solid var(--line);
           border-radius: 999px; padding: 5px 11px; cursor: pointer; font-size: var(--text-sm); }
 .health i { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); }
@@ -69,7 +69,7 @@ h3 { font-size: var(--text-lg); }
 @media (prefers-reduced-motion: reduce) { .health.danger i { animation: none; } }
 .sev { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--warm); }
 .sev.problem, .sev.danger { background: var(--bad); }
-.gear { background: none; border: 0; font-size: 21px; cursor: pointer; padding: 2px 4px; }
+.gear { background: none; border: 0; font-size: 21px; cursor: pointer; min-width: 40px; min-height: 40px; margin-right: -6px; }
 
 /* Bottom navigation */
 .tabs { position: fixed; bottom: 0; left: 0; right: 0; z-index: 10; display: grid; grid-template-columns: repeat(4, 1fr);
@@ -154,7 +154,7 @@ label.field { display: grid; gap: 5px; font-size: var(--text-sm); color: var(--d
 .moment.wrong { opacity: .55; }
 .tag { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--line); }
 .tag.spot { color: var(--accent); } .tag.burst { color: var(--burst); } .tag.feeding { color: var(--feed); } .tag.chase { color: var(--chase); }
-.star { background: none; border: 0; cursor: pointer; font-size: 20px; color: var(--dim); padding: 0 2px; }
+.star { background: none; border: 0; cursor: pointer; font-size: 22px; color: var(--dim); min-width: 40px; min-height: 40px; }
 .star.on { color: var(--warm); }
 
 /* Player and sheets */
@@ -190,7 +190,7 @@ body.kiosk .live img { height: 100vh; aspect-ratio: auto; }
 
 /* Mode switch in the header */
 .mode { display: flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; flex: none; }
-.mode button { background: none; border: 0; padding: 5px 11px; font-size: var(--text-sm); color: var(--dim); cursor: pointer; }
+.mode button { background: none; border: 0; padding: 9px 12px; font-size: var(--text-sm); color: var(--dim); cursor: pointer; }
 .mode button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .tabs a[hidden] { display: none; }
 body[data-mode="free"] .tabs { grid-template-columns: repeat(2, 1fr); }
@@ -210,7 +210,7 @@ body[data-mode="free"] .tabs { grid-template-columns: repeat(2, 1fr); }
 .rec-rename:hover, .rec-rename:focus { border-bottom-color: var(--line); outline: 0; }
 
 /* Monitor dashboard */
-.dash { display: grid; grid-template-columns: 1fr 360px; gap: var(--gap); align-items: start; }
+.dash { display: grid; grid-template-columns: minmax(0, 1fr) clamp(250px, 30vw, 380px); gap: var(--gap); align-items: start; }
 .dash-live { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; cursor: pointer; }
 .dash-live img { width: 100%; display: block; aspect-ratio: 16 / 10; object-fit: contain; }
 .dash-badge { position: absolute; left: 12px; top: 10px; background: var(--shade); color: #fff; padding: 3px 9px; border-radius: 6px; font-size: 12px; font-weight: 700; letter-spacing: .04em; }
@@ -228,6 +228,40 @@ body.kiosk .dash-clock { padding-right: 64px; }
 body.kiosk .dash-live { height: calc(100vh - 36px); }
 body.kiosk .dash-live img { height: 100%; aspect-ratio: auto; }
 @media (max-width: 760px) { .dash { grid-template-columns: 1fr; } }
+
+/* Pictures never taller than the screen: the whole picture always fits, letterboxed if needed */
+.live img, .dash-live img { max-height: calc(100dvh - 150px); }
+main.wide { max-width: none; }
+.health { min-height: 36px; min-width: 40px; justify-content: center; }
+.fs .fs-btn { opacity: 1; }
+.drawbox { width: fit-content; max-width: 100%; margin: 0 auto; }
+.drawbox img { width: auto; max-width: 100%; max-height: calc(100dvh - 220px); }
+dialog { max-height: calc(100dvh - 16px); overflow: auto; }
+[data-d] { min-width: 44px; min-height: 40px; font-size: 18px; }
+.dash-moments a { padding: 10px 4px; margin: -10px -4px; }
+
+/* Full screen picture: real full screen where allowed, otherwise the picture covers the page */
+.live.fs, .dash-live.fs { position: fixed; inset: 0; z-index: 100; border-radius: 0; background: #000; margin: 0; }
+.live.fs img, .dash-live.fs img { width: 100%; height: 100%; max-height: none; aspect-ratio: auto; object-fit: contain; }
+.live:fullscreen, .dash-live:fullscreen { width: 100vw; height: 100vh; }
+body.immersive .top, body.immersive .tabs, body.immersive .kiosk-menu { display: none; }
+.live.fs .tools { opacity: .6; } .live.fs .tools .chip:not(.fs-btn) { display: none; }
+.live.fs .note { display: none; }
+
+/* Phone on its side: thin bars, icons only, the picture gets the height */
+@media (orientation: landscape) and (max-height: 520px) {
+  .top { padding-top: calc(4px + env(safe-area-inset-top)); padding-bottom: 4px; }
+  .top h1 { font-size: var(--text-md); }
+  .tabs a { padding: 5px 0 6px; font-size: 0; gap: 0; }
+  .tabs a svg { width: 22px; height: 22px; }
+  body { padding-bottom: calc(44px + env(safe-area-inset-bottom)); }
+  main { padding: 10px max(var(--pad), env(safe-area-inset-left)) 10px max(var(--pad), env(safe-area-inset-right)); }
+  .live img, .dash-live img { max-height: calc(100dvh - 112px); }
+  .drawbox img { max-height: calc(100dvh - 200px); }
+  .dash-clock .time { font-size: 28px; }
+  .health span { display: none; }
+  dialog video { max-height: 58dvh; }
+}
 
 /* Phone card QR and the kiosk corner menu */
 .qr { width: 180px; height: 180px; background: #fff; border-radius: var(--radius-sm); padding: 6px; flex: none; }
