@@ -5,12 +5,13 @@ from __future__ import annotations
 import functools
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
 
 from .db import DB
-from .recorder import act_path, read_act
+from .recorder import act_path, proxy_paths, read_act, read_proxy_act, verify_mp4
 
 
 @functools.lru_cache(maxsize=256)
@@ -72,13 +73,37 @@ class FrameReader:
             self.proc = None
 
 
+_readable: dict[str, bool] = {}
+
+
+def readable(path: Path) -> bool:
+    """verify_mp4, remembered for finished files (they don't change)."""
+    key = str(path)
+    if key not in _readable:
+        ok = verify_mp4(path)
+        if not ok or path.stat().st_mtime < time.time() - 60:
+            _readable[key] = ok
+        return ok
+    return _readable[key]
+
+
 def extract_clip(db: DB, start_ts: float, end_ts: float, out_path: Path) -> bool:
-    """Cut [start_ts, end_ts] out of the real time recording without re-encoding."""
+    """Cut [start_ts, end_ts] out of the real time recording without re-encoding. Where the full speed
+    file can't be read (see recorder.verify_mp4), the one frame a second proxy stands in."""
     lines = []
     for seg in db.segments_between(start_ts, end_ts):
         video = Path(seg["path"])
-        act = read_act(act_path(video))
-        if not video.exists() or len(act) == 0:
+        if not video.exists():
+            continue
+        if readable(video):
+            act = read_act(act_path(video))
+            fps = seg["fps"]
+        else:
+            video, pact = proxy_paths(video)
+            if not video.exists():
+                continue
+            act, fps = read_proxy_act(pact), 1.0
+        if len(act) == 0:
             continue
         i0 = int(np.searchsorted(act["ts"], start_ts))
         i1 = int(np.searchsorted(act["ts"], end_ts))
@@ -86,9 +111,9 @@ def extract_clip(db: DB, start_ts: float, end_ts: float, out_path: Path) -> bool
             continue
         lines.append(f"file '{video.resolve()}'")
         if i0 > 0:
-            lines.append(f"inpoint {i0 / seg['fps']:.3f}")
+            lines.append(f"inpoint {i0 / fps:.3f}")
         if i1 < len(act):
-            lines.append(f"outpoint {i1 / seg['fps']:.3f}")
+            lines.append(f"outpoint {i1 / fps:.3f}")
     if not lines:
         return False
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,7 +125,7 @@ def extract_clip(db: DB, start_ts: float, end_ts: float, out_path: Path) -> bool
         r = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0",
                             "-i", listing, "-c", "copy", "-movflags", "+faststart", str(tmp)],
                            capture_output=True, timeout=300)
-        if r.returncode != 0 or not tmp.exists():
+        if r.returncode != 0 or not tmp.exists() or not verify_mp4(tmp):
             return False
         tmp.replace(out_path)
         return True

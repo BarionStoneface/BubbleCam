@@ -27,7 +27,7 @@ import numpy as np
 from .config import Config
 from .db import DB
 from .media import FrameReader, probe_size
-from .recorder import act_path, detect_encoder, encoder_args, proxy_paths, read_act, read_proxy_act
+from .recorder import act_path, encoder_args, proxy_paths, read_act, read_proxy_act
 
 log = logging.getLogger(__name__)
 
@@ -199,8 +199,20 @@ def render(db: DB, cfg: Config, tl_id: int, tanks=None) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         name = datetime.fromtimestamp(row["start_ts"]).strftime("%Y-%m-%d_%H%M")
         out = out_dir / f"{tl_id}_{name}.mp4"
-    w, h = probe_size(segments[picks[0].seg]["path"])
-    enc = detect_encoder(cfg.record.encoder)
+    # Size from the first readable file; full speed footage may be unreadable (see recorder), the
+    # one frame a second proxy always uses the software encoder.
+    w = h = None
+    for cand in (segments[picks[0].seg]["path"], str(proxy_paths(Path(segments[picks[0].seg]["path"]))[0])):
+        try:
+            w, h = probe_size(cand)
+            break
+        except (subprocess.CalledProcessError, ValueError):
+            continue
+    if w is None:
+        db.execute("UPDATE timelapses SET status='failed', error=? WHERE id=?",
+                   ("The recordings from this stretch can't be read.", tl_id))
+        return
+    enc = "libx264"
     proc = subprocess.Popen(
         ["nice", "-n", "15", "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
          "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{w}x{h}", "-framerate", str(p.output_fps), "-i", "-",
@@ -208,6 +220,8 @@ def render(db: DB, cfg: Config, tl_id: int, tanks=None) -> None:
         stdin=subprocess.PIPE)
 
     readers: dict[tuple[int, str], FrameReader] = {}
+    bad_main: set[int] = set()
+    proxy_ts: dict[int, np.ndarray] = {}
     current_seg = -1
     written = 0
     try:
@@ -217,13 +231,24 @@ def render(db: DB, cfg: Config, tl_id: int, tanks=None) -> None:
                     r.close()
                 readers.clear()
                 current_seg = pick.seg
+            video = Path(segments[pick.seg]["path"])
+            if pick.source == "main" and (pick.seg, "main") not in readers and pick.seg not in bad_main:
+                try:
+                    readers[(pick.seg, "main")] = FrameReader(video, segments[pick.seg]["fps"])
+                except (subprocess.CalledProcessError, ValueError):
+                    bad_main.add(pick.seg)
+            if pick.source == "main" and pick.seg in bad_main:
+                # Unreadable full speed file: use the proxy frame from the same second.
+                pts = proxy_ts.setdefault(pick.seg, read_proxy_act(proxy_paths(video)[1])["ts"])
+                if len(pts) == 0:
+                    continue
+                pick = Pick(pick.seg, "proxy", int(np.abs(pts - pick.ts).argmin()), pick.ts, pick.speed)
             key = (pick.seg, pick.source)
             if key not in readers:
-                video = Path(segments[pick.seg]["path"])
-                if pick.source == "main":
-                    readers[key] = FrameReader(video, segments[pick.seg]["fps"])
-                else:
+                try:
                     readers[key] = FrameReader(proxy_paths(video)[0], 1.0, seek_gap=5)
+                except (subprocess.CalledProcessError, ValueError):
+                    continue
             frame = readers[key].get(pick.idx)
             if frame is None or frame.shape != (h, w):
                 continue

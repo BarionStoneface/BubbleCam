@@ -581,7 +581,7 @@ function playUrl(src, title, info = '') {
   $('#pvideo').src = src;
   $('#ptitle').textContent = title;
   $('#pinfo').textContent = info;
-  $('#pdownload').href = src + (src.includes('?') ? '&' : '?') + 'download=1';
+  $('#pdownload').dataset.src = src;
   $('#ptags').innerHTML = '';
   ['#pstar', '#pwrong', '#pdelete'].forEach(s => { $(s).hidden = true; });
   $('#player').showModal();
@@ -592,7 +592,7 @@ function openMoment(ev, onChange) {
   const src = `/api/moments/${ev.id}/clip.mp4`;
   playUrl(src, momentLabel(ev), `${ev.tank_name ? ev.tank_name + ' · ' : ''}${dayTime(ev.start_ts)}${ev.end_ts ? ' · ' + dur(ev.end_ts - ev.start_ts) : ''}`);
   currentMoment = { ev, onChange };
-  $('#pdownload').href = src;
+  $('#pdownload').dataset.src = src;
   const star = $('#pstar'), wrong = $('#pwrong'), del = $('#pdelete');
   [star, wrong, del].forEach(b => { b.hidden = false; });
   star.classList.toggle('on', !!ev.starred);
@@ -648,6 +648,26 @@ function drawTags(ev, onChange) {
   }
 }
 $('#pclose').onclick = () => $('#player').close();
+$('#pdownload').onclick = () => attempt(async () => {
+  const b = $('#pdownload'), src = b.dataset.src;
+  b.disabled = true; b.textContent = 'Getting it…';
+  try {
+    const r = await fetch(src);
+    if (!r.ok) {
+      let msg = `Couldn't download it (${r.status})`;
+      try { const j = await r.json(); if (j.detail) msg = j.detail; } catch (e) {}
+      throw new Error(msg);
+    }
+    const blob = await r.blob();
+    const cd = r.headers.get('content-disposition') || '';
+    const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)/i);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = m ? decodeURIComponent(m[1]) : 'bubblecam.mp4';
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  } finally { b.disabled = false; b.textContent = 'Download'; }
+});
 $('#pvideo').onerror = () => {
   const e = $('#pvideo').error;
   const why = { 1: 'stopped', 2: "couldn't be fetched", 3: 'is damaged', 4: "is in a format this browser can't play" }[e && e.code] || 'failed';
@@ -810,10 +830,12 @@ async function pageTimelapses() {
         <div class="row">${r.has_file ? '<button class="btn primary" data-a="play">▶ Play</button>' : ''}
         <button class="star${r.starred ? ' on' : ''}" data-a="star" title="Keep forever">★</button><span class="grow"></span>
         ${r.has_file ? `<a class="btn small" href="/api/timelapses/${r.id}.mp4?download=1" download>Download</a>` : ''}
+        ${r.status === 'failed' ? '<button class="btn small primary" data-a="retry">Try again</button>' : ''}
         <button class="btn small" data-a="del">Delete</button></div></div>`);
       card.onclick = e => attempt(async () => {
         const a = e.target.dataset.a;
         if (a === 'play') playUrl(`/api/timelapses/${r.id}.mp4`, title);
+        if (a === 'retry') { await send(`/api/timelapses/${r.id}/retry`, 'POST'); load(); }
         if (a === 'star') { await send(`/api/timelapses/${r.id}/star?on=${!r.starred}`, 'POST'); load(); }
         if (a === 'del' && await ask('Delete this timelapse?', { yes: 'Delete' })) { await send(`/api/timelapses/${r.id}`, 'DELETE'); load(); }
       });

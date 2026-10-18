@@ -13,8 +13,11 @@ The proxy is what lets the dynamic timelapse skip quiet hours without decoding e
 from __future__ import annotations
 
 import logging
+import os
+import platform
 import queue
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -31,42 +34,80 @@ ACT_DTYPE = np.dtype([("ts", "<f8"), ("tank", "<f4"), ("spots", "<f4", (4,)), ("
 PROXY_DTYPE = np.dtype([("idx", "<i4"), ("ts", "<f8"), ("zone", "<f4"), ("tank", "<f4")])
 
 
-def detect_encoder(preference: str) -> str:
-    """Return a working H.264 encoder name. The Pi 4 hardware encoder shows up in
-    `ffmpeg -encoders` even on machines without the hardware, so actually try it."""
-    candidates = ["h264_v4l2m2m", "libx264"] if preference == "auto" else [preference]
-    for enc in candidates:
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-               "testsrc=size=320x240:rate=10", "-frames:v", "10", "-c:v", enc, "-pix_fmt", "yuv420p",
-               "-f", "null", "-"]
-        try:
-            if subprocess.run(cmd, capture_output=True, timeout=20).returncode == 0:
-                return enc
-        except subprocess.TimeoutExpired:
-            pass
+# Fragmented MP4: still playable if the Pi loses power mid segment. The Pi's hardware encoder can't
+# supply the stream header before the first frame, which "empty_moov" needs, and the file comes out
+# unreadable; without empty_moov the header is written after the first frame and it works.
+FRAG = "+frag_keyframe+empty_moov+default_base_moof"
+FRAG_LATE = "+frag_keyframe+default_base_moof"
+
+
+def verify_mp4(path: Path) -> bool:
+    """Can this video actually be read back: size known and the first frame decodes?"""
+    try:
+        size = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                               "stream=width,height", "-of", "csv=p=0", str(path)],
+                              capture_output=True, text=True, timeout=30)
+        if size.returncode != 0 or "," not in size.stdout:
+            return False
+        dec = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-f", "null", "-"],
+                             capture_output=True, timeout=30)
+        return dec.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _try_encoder(enc: str, movflags: str, width: int, height: int, fps: float) -> bool:
+    """Record two seconds the way the real recorder does, then check the file reads back."""
+    fd, name = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+    path = Path(name)
+    try:
+        frames = int(max(fps, 1) * 2)
+        data = b"".join(np.full((height, width), 40 + (i * 3) % 100, np.uint8).tobytes() for i in range(frames))
+        r = subprocess.run(raw_encoder_cmd(path, width, height, fps, enc, "2M", max(1, round(fps)), movflags),
+                           input=data, capture_output=True, timeout=60)
+        return r.returncode == 0 and verify_mp4(path)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def detect_encoder(preference: str, width: int = 1280, height: int = 800, fps: float = 30.0) -> tuple[str, str]:
+    """Return (encoder, movflags) that produce files that can be read back. The Pi 4 hardware encoder
+    shows up in `ffmpeg -encoders` even where there's no hardware, and on a Pi it can produce files
+    nothing can open, so try each for real, at the real size, and check the result."""
+    encs = ["h264_v4l2m2m", "libx264"] if preference == "auto" else [preference, "libx264"]
+    for enc in dict.fromkeys(encs):
+        for movflags in (FRAG, FRAG_LATE):
+            if _try_encoder(enc, movflags, width, height, fps):
+                return enc, movflags
+            log.info("encoder %s with %s makes unreadable files; trying the next", enc, movflags)
     raise RuntimeError("no working H.264 encoder found (is ffmpeg installed?)")
 
 
 def encoder_args(encoder: str, bitrate: str, gop: int) -> list[str]:
     args = ["-c:v", encoder, "-b:v", bitrate, "-g", str(gop), "-pix_fmt", "yuv420p"]
     if encoder == "libx264":
-        args += ["-preset", "veryfast", "-sc_threshold", "0", "-bf", "0"]
+        # On the Pi's processor, ultrafast is what keeps up with 30 frames a second.
+        fast = "ultrafast" if platform.machine() in ("aarch64", "armv7l", "arm64") else "veryfast"
+        args += ["-preset", fast, "-sc_threshold", "0", "-bf", "0"]
     return args
 
 
 def raw_encoder_cmd(path: Path, width: int, height: int, fps: float, encoder: str, bitrate: str,
-                    gop: int) -> list[str]:
+                    gop: int, movflags: str = FRAG) -> list[str]:
     return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{width}x{height}", "-framerate", str(fps), "-i", "-",
             *encoder_args(encoder, bitrate, gop),
-            # Fragmented MP4: still playable if the Pi loses power mid segment.
-            "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+            "-movflags", movflags,
             "-f", "mp4", str(path)]
 
 
 class _Segment:
     def __init__(self, rec_dir: Path, start_ts: float, width: int, height: int, fps: float,
-                 encoder: str, bitrate: str, db: DB, flat: bool = False, kept: bool = False):
+                 encoder: str, bitrate: str, db: DB, flat: bool = False, kept: bool = False,
+                 movflags: str = FRAG):
         day = datetime.fromtimestamp(start_ts)
         folder = rec_dir if flat else rec_dir / day.strftime("%Y-%m-%d")
         folder.mkdir(parents=True, exist_ok=True)
@@ -74,7 +115,7 @@ class _Segment:
         self.path = folder / f"{stem}.mp4"
         self.proxy_path = folder / f"{stem}.proxy.mp4"
         self.main = subprocess.Popen(raw_encoder_cmd(self.path, width, height, fps, encoder, bitrate,
-                                                     gop=max(1, round(fps))),
+                                                     gop=max(1, round(fps)), movflags=movflags),
                                      stdin=subprocess.PIPE)
         # Proxy is 1 fps, so libx264 costs next to nothing and leaves the hardware encoder to the main stream.
         self.proxy = subprocess.Popen(raw_encoder_cmd(self.proxy_path, width, height, 1, "libx264", bitrate,
@@ -146,8 +187,9 @@ class Recorder:
         self.flat, self.kept = flat, kept
         self.width, self.height, self.fps = width, height, fps
         self.db = db
-        self.encoder = detect_encoder(cfg.encoder)
-        log.info("recording with %s", self.encoder)
+        self.encoder, self.movflags = detect_encoder(cfg.encoder, width, height, fps)
+        log.info("recording with %s (%s)", self.encoder, self.movflags)
+        self.unreadable = 0          # finished parts that couldn't be read back
         self.q: queue.Queue = queue.Queue(maxsize=int(fps * 2))
         self.dropped = 0
         self.last_write = time.time()
@@ -181,9 +223,10 @@ class Recorder:
             frame, ts, tank, spots, view = item
             if self.segment is None or ts - self.segment.start_ts >= seg_len:
                 if self.segment:
-                    self.segment.close()
+                    self._close_and_check(self.segment)
                 self.segment = _Segment(self.rec_dir, ts, self.width, self.height, self.fps,
-                                        self.encoder, self.cfg.bitrate, self.db, self.flat, self.kept)
+                                        self.encoder, self.cfg.bitrate, self.db, self.flat, self.kept,
+                                        self.movflags)
             try:
                 self.segment.write(frame, ts, tank, spots, view)
                 self.last_write = time.time()
@@ -197,6 +240,22 @@ class Recorder:
         if self.segment:
             self.segment.close()
             self.segment = None
+
+    def _close_and_check(self, seg: "_Segment") -> None:
+        seg.close()
+        path = seg.path
+        threading.Thread(target=self._check, args=(path,), name="rec-check", daemon=True).start()
+
+    def _check(self, path: Path) -> None:
+        """Every finished part is read back. If one can't be, the encoder is misbehaving: switch to the
+        software one so the rest of tonight is watchable."""
+        if not path.exists() or verify_mp4(path):
+            return
+        self.unreadable += 1
+        log.error("recording %s can't be read back (%s, %s)", path, self.encoder, self.movflags)
+        if self.encoder != "libx264" or self.movflags != FRAG:
+            log.warning("switching recording to libx264")
+            self.encoder, self.movflags = "libx264", FRAG
 
     def cut(self) -> None:
         """Finish the current segment now (recording is pausing)."""

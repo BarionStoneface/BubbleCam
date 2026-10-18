@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from .. import pi
 from ..core import App, encode_view
-from ..media import FrameReader
+from ..media import FrameReader, readable
 from ..recorder import act_path, read_act
 from ..summary import feedings, night_bounds, nights, tank_summary, trends
 from ..timelapse import TimelapseParams
@@ -504,13 +504,19 @@ def create_app(core: App) -> FastAPI:
     @api.get("/api/moments/{ev_id}/clip.mp4")
     async def moment_clip(ev_id: int):
         ev = moment(ev_id)
-        if ev["clip"] and Path(ev["clip"]).exists():
-            return FileResponse(ev["clip"], media_type="video/mp4")
+        name = f"bubblecam_{datetime.fromtimestamp(ev['start_ts']).strftime('%Y-%m-%d_%H%M%S')}_{ev['kind']}.mp4"
+        clip = Path(ev["clip"]) if ev["clip"] else None
+        if clip and clip.exists():
+            if await run_in_threadpool(readable, clip):
+                return FileResponse(clip, media_type="video/mp4", filename=name, content_disposition_type="inline")
+            # Cut from footage that can't be read: cut it again (from the proxy if need be).
+            clip.unlink(missing_ok=True)
+            db.execute("UPDATE events SET clip=NULL WHERE id=?", (ev_id,))
         # Not cut yet (still happening, or just ended): cut it from the raw footage now.
         p = await run_in_threadpool(core.storage.footage, ev["start_ts"], ev["end_ts"] or time.time())
         if p is None:
-            raise HTTPException(410, "this clip has been cleared out")
-        return FileResponse(p, media_type="video/mp4")
+            raise HTTPException(410, "The recording for this moment has been cleared out to make room.")
+        return FileResponse(p, media_type="video/mp4", filename=name, content_disposition_type="inline")
 
     @api.post("/api/moments/{ev_id}/star")
     def star(ev_id: int, on: bool = True):
@@ -589,6 +595,14 @@ def create_app(core: App) -> FastAPI:
             raise HTTPException(404)
         return FileResponse(row["path"], media_type="video/mp4",
                             filename=Path(row["path"]).name if download else None)
+
+    @api.post("/api/timelapses/{tl_id}/retry")
+    def retry_timelapse(tl_id: int):
+        if not db.one("SELECT id FROM timelapses WHERE id=?", (tl_id,)):
+            raise HTTPException(404, "no such timelapse")
+        db.execute("UPDATE timelapses SET status='queued', error=NULL, progress=0 WHERE id=?", (tl_id,))
+        core.timelapses.wake.set()
+        return {"ok": True}
 
     @api.post("/api/timelapses/{tl_id}/star")
     def star_timelapse(tl_id: int, on: bool = True):
