@@ -102,7 +102,13 @@ def create_app(core: App) -> FastAPI:
 
     @api.get("/")
     def index():
-        return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
+        # Stamp the script and style links with their file times, so a phone that kept an old copy
+        # picks up the new one straight after an update.
+        html = (STATIC / "index.html").read_text()
+        for name in ("app.js", "style.css"):
+            v = int((STATIC / name).stat().st_mtime)
+            html = html.replace(f"/static/{name}", f"/static/{name}?v={v}")
+        return Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})
 
     @api.get("/manifest.webmanifest")
     def manifest():
