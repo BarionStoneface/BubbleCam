@@ -325,6 +325,7 @@ async function pageTank(arg) {
   boxesBtn.onclick = () => { overlay = !overlay; boxesBtn.textContent = overlay ? 'Boxes on' : 'Boxes off'; setStream(); };
   setStream();
   $('.tools', liveBox).append(fsButton(liveBox));
+  zoomable(liveBox, liveImg);
   if (document.body.classList.contains('kiosk')) liveImg.onclick = () => { if (!liveBox.classList.contains('fs')) location.hash = '#dash'; };
 
   function drawSpots(list) {
@@ -576,8 +577,21 @@ function dayBar(card, tank) {
 // Video player for moments and timelapses
 
 let currentMoment = null;
+let playerZoom = null;
 function playUrl(src, title, info = '') {
   currentMoment = null;
+  if (!playerZoom) {
+    const v = $('#pvideo'), wrap = $('#pzoom');
+    playerZoom = zoomable(wrap, v);
+    // Zoomed in, the browser's own controls would be blown up and cut off: hide them, and a tap
+    // plays or pauses instead.
+    wrap.addEventListener('zoom', e => { v.controls = e.detail === 1; });
+    wrap.addEventListener('click', e => {
+      if (e.target.closest('.zoombar') || v.controls) return;
+      v.paused ? v.play().catch(() => {}) : v.pause();
+    });
+  }
+  playerZoom.reset();
   $('#pvideo').src = src;
   $('#ptitle').textContent = title;
   $('#pinfo').textContent = info;
@@ -1127,43 +1141,56 @@ if (document.body.classList.contains('kiosk')) {
 
 async function pageDraw(arg) {
   const tankId = +arg;
-  const layout = await api(`/api/tanks/${tankId}/layout`);
+  const [layout, shapes] = await Promise.all([api(`/api/tanks/${tankId}/layout`), api('/api/shapes')]);
   setTitle(`Boxes: ${layout.name}`);
   const st = await api('/api/status');
   if (!st.tank || st.tank.id !== tankId) {
     view.append(el('<div class="banner">The camera is looking at a different tank right now. Boxes are drawn on the live picture, so point it at this tank first.</div>'));
     return;
   }
-  // Modes: each animal's areas, each animal's home, and the ignore areas.
+  // Modes: each animal's areas, each animal's home, the ignore areas and the filter bubbles. Each has
+  // a remembered size (shape), so after the camera moves a box can be dropped with one tap.
   const modes = [];
   for (const s of layout.spotlights) {
-    modes.push({ key: `a${s.id}`, label: `Where ${s.name} hangs out`, color: '--accent', get: () => s.areas, set: v => { s.areas = v; } });
-    modes.push({ key: `h${s.id}`, label: `${s.name}'s home (one box)`, color: '--warm', single: true,
+    const n = s.name.trim().toLowerCase();
+    modes.push({ key: `a${s.id}`, label: `Where ${s.name} hangs out`, short: s.name, color: '--accent', shape: `area:${n}`,
+      get: () => s.areas, set: v => { s.areas = v; } });
+    modes.push({ key: `h${s.id}`, label: `${s.name}'s home (one box)`, short: `${s.name}'s home`, color: '--warm', single: true, shape: `home:${n}`,
       get: () => s.home ? [s.home] : [], set: v => { s.home = v[0] || null; } });
   }
-  modes.push({ key: 'ignore', label: 'Ignore: bubbles, filter flow, swaying plants', color: '--dim',
+  modes.push({ key: 'ignore', label: 'Ignore: bubbles, filter flow, swaying plants', short: 'Ignore', color: '--dim', shape: 'ignore',
     get: () => layout.settings.ignore, set: v => { layout.settings.ignore = v; } });
-  modes.push({ key: 'bubbles', label: 'Filter bubbles: one box over the bubble stream', color: '--air', single: true,
+  modes.push({ key: 'bubbles', label: 'Filter bubbles: one box over the bubble stream', short: 'Bubbles', color: '--air', single: true, shape: 'bubbles',
     get: () => layout.settings.bubbles ? [layout.settings.bubbles] : [], set: v => { layout.settings.bubbles = v[0] || null; } });
   let mode = modes[0];
   let selected = -1;
+  const sizes = {};         // shapes learned this visit, saved with the boxes
 
   const card = el(`<div class="card" style="display:grid;gap:12px">
-    <label class="field">What are you drawing?<select id="mode">${modes.map(m => `<option value="${m.key}">${esc(m.label)}</option>`).join('')}</select></label>
-    <div class="drawbox"><img alt="current picture"><canvas></canvas></div>
-    <p class="dim" style="margin:0">Drag on the picture to draw a box. Tap a box to select it.</p>
+    <label class="field">What are you drawing?<select id="drawmode">${modes.map(m => `<option value="${m.key}">${esc(m.label)}</option>`).join('')}</select></label>
+    <div class="drawbox"><div class="zoomin"><img alt="current picture"><canvas></canvas></div></div>
+    <p class="dim" id="hint" style="margin:0"></p>
     <div class="row"><button class="btn small" id="rm" disabled>Remove selected box</button><button class="btn small" id="pic">New picture</button>
       <span class="grow"></span><button class="btn primary" id="save">Save</button></div></div>`);
   view.append(card);
-  const img = $('img', card), canvas = $('canvas', card);
+  const img = $('img', card), canvas = $('canvas', card), box = $('.drawbox', card);
   img.src = `/api/snapshot.jpg?width=1280&t=${Date.now()}`;
   img.onload = render;
   $('#pic', card).onclick = () => { img.src = `/api/snapshot.jpg?width=1280&t=${Date.now()}`; };
-  $('#mode', card).onchange = e => { mode = modes.find(m => m.key === e.target.value); selected = -1; render(); };
+  $('#drawmode', card).onchange = e => { mode = modes.find(m => m.key === e.target.value); selected = -1; render(); };
+  let act = null;           // what the finger is doing: draw, move or resize
+  zoomable(box, $('.zoomin', card), { oneFingerPan: false, onGesture: () => { act = null; render(); } });
+  box.addEventListener('zoom', () => render());
 
-  let drag = null;
+  const saved = () => sizes[mode.shape] || shapes[mode.shape];
+  function hint() {
+    const sz = saved();
+    const tap = sz ? `Tap where it goes to drop a box the size you used last time. ` : '';
+    return `${tap}Drag on the picture to draw a box. Tap a box to pick it, then drag it to move it or drag a corner to resize. Two fingers zoom.`;
+  }
   function render() {
     const r = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+    if (!r.width) return;
     canvas.width = r.width * dpr; canvas.height = r.height * dpr;
     const g = canvas.getContext('2d'); g.scale(dpr, dpr); g.font = '12px ' + css('--font');
     for (const m of modes) {
@@ -1175,30 +1202,81 @@ async function pageDraw(arg) {
         g.fillStyle = m.key === 'ignore' ? 'rgba(0,0,0,.45)' : 'rgba(0,0,0,.08)';
         const x = b.x * r.width, y = b.y * r.height, w = b.w * r.width, h = b.h * r.height;
         g.fillRect(x, y, w, h); g.strokeRect(x, y, w, h);
-        if (mine) { g.fillStyle = css(m.color); g.fillText(m.label.split(':')[0].replace(' (one box)', ''), x + 4, y + 14); }
+        if (mine) { g.fillStyle = css(m.color); g.fillText(m.short, x + 4, y + 14); }
+        if (mine && i === selected) {
+          g.fillStyle = css(m.color);
+          for (const [cx, cy] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) g.fillRect(cx - 7, cy - 7, 14, 14);
+        }
       });
     }
     g.globalAlpha = 1;
-    if (drag && drag.w > 0) { g.strokeStyle = css(mode.color); g.setLineDash([5, 4]); g.lineWidth = 2;
-      g.strokeRect(drag.x * r.width, drag.y * r.height, drag.w * r.width, drag.h * r.height); g.setLineDash([]); }
+    if (act && act.kind === 'draw' && act.w > 0) { g.strokeStyle = css(mode.color); g.setLineDash([5, 4]); g.lineWidth = 2;
+      g.strokeRect(act.x * r.width, act.y * r.height, act.w * r.width, act.h * r.height); g.setLineDash([]); }
     $('#rm', card).disabled = selected < 0;
+    $('#hint', card).textContent = hint();
   }
   const rel = e => { const r = canvas.getBoundingClientRect();
     return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))]; };
-  canvas.onpointerdown = e => { canvas.setPointerCapture(e.pointerId); const [x, y] = rel(e); drag = { x0: x, y0: y, x, y, w: 0, h: 0 }; };
-  canvas.onpointermove = e => { if (!drag) return; const [x, y] = rel(e);
-    Object.assign(drag, { x: Math.min(x, drag.x0), y: Math.min(y, drag.y0), w: Math.abs(x - drag.x0), h: Math.abs(y - drag.y0) }); render(); };
-  canvas.onpointerup = () => {
-    if (!drag) return;
-    if (drag.w > 0.015 && drag.h > 0.015) {
-      const box = { x: drag.x, y: drag.y, w: drag.w, h: drag.h };
-      mode.set(mode.single ? [box] : [...mode.get(), box]);
-      selected = mode.get().length - 1;
-    } else {
-      selected = mode.get().findIndex(b => drag.x0 >= b.x && drag.x0 <= b.x + b.w && drag.y0 >= b.y && drag.y0 <= b.y + b.h);
-    }
-    drag = null; render();
+  const clampBox = b => {
+    const w = Math.min(1, Math.max(0.01, b.w)), h = Math.min(1, Math.max(0.01, b.h));
+    return { x: Math.min(1 - w, Math.max(0, b.x)), y: Math.min(1 - h, Math.max(0, b.y)), w, h };
   };
+  const put = (i, b) => { const list = [...mode.get()]; list[i] = clampBox(b); mode.set(list); };
+
+  canvas.onpointerdown = e => {
+    if (e.button > 0) return;
+    canvas.setPointerCapture(e.pointerId);
+    const [x, y] = rel(e), r = canvas.getBoundingClientRect();
+    const hx = 16 / r.width, hy = 16 / r.height;           // finger sized corner handles, in picture units
+    const boxes = mode.get();
+    if (selected >= 0 && boxes[selected]) {
+      const b = boxes[selected];
+      const corners = [[b.x, b.y, 'tl'], [b.x + b.w, b.y, 'tr'], [b.x, b.y + b.h, 'bl'], [b.x + b.w, b.y + b.h, 'br']];
+      const c = corners.find(([cx, cy]) => Math.abs(x - cx) < hx && Math.abs(y - cy) < hy);
+      if (c) { act = { kind: 'resize', corner: c[2], b0: { ...b }, x0: x, y0: y }; return; }
+    }
+    const hit = boxes.findIndex(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+    if (hit >= 0) { selected = hit; act = { kind: 'move', b0: { ...boxes[hit] }, x0: x, y0: y, moved: false }; render(); return; }
+    act = { kind: 'draw', x0: x, y0: y, x, y, w: 0, h: 0 };
+  };
+  canvas.onpointermove = e => {
+    if (!act) return;
+    const [x, y] = rel(e);
+    if (act.kind === 'draw') Object.assign(act, { x: Math.min(x, act.x0), y: Math.min(y, act.y0), w: Math.abs(x - act.x0), h: Math.abs(y - act.y0) });
+    if (act.kind === 'move') {
+      const dx = x - act.x0, dy = y - act.y0;
+      if (Math.abs(dx) + Math.abs(dy) > 0.004) act.moved = true;
+      put(selected, { ...act.b0, x: act.b0.x + dx, y: act.b0.y + dy });
+    }
+    if (act.kind === 'resize') {
+      const b = act.b0; let x0 = b.x, y0 = b.y, x1 = b.x + b.w, y1 = b.y + b.h;
+      if (act.corner[1] === 'l') x0 = Math.min(x, x1 - 0.01); else x1 = Math.max(x, x0 + 0.01);
+      if (act.corner[0] === 't') y0 = Math.min(y, y1 - 0.01); else y1 = Math.max(y, y0 + 0.01);
+      put(selected, { x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+    }
+    render();
+  };
+  canvas.onpointerup = () => {
+    if (!act) return;
+    const a = act; act = null;
+    if (a.kind === 'draw') {
+      if (a.w > 0.015 && a.h > 0.015) {
+        const b = clampBox({ x: a.x, y: a.y, w: a.w, h: a.h });
+        mode.set(mode.single ? [b] : [...mode.get(), b]);
+        selected = mode.get().length - 1;
+        sizes[mode.shape] = { w: b.w, h: b.h };
+      } else if (saved()) {
+        // A tap on empty picture: drop the remembered size, centred where the finger went.
+        const sz = saved();
+        const b = clampBox({ x: a.x0 - sz.w / 2, y: a.y0 - sz.h / 2, w: sz.w, h: sz.h });
+        mode.set(mode.single ? [b] : [...mode.get(), b]);
+        selected = mode.get().length - 1;
+      } else selected = -1;
+    }
+    if (a.kind === 'resize' && selected >= 0) { const b = mode.get()[selected]; sizes[mode.shape] = { w: b.w, h: b.h }; }
+    render();
+  };
+  canvas.onpointercancel = () => { act = null; render(); };
   $('#rm', card).onclick = () => { mode.set(mode.get().filter((_, i) => i !== selected)); selected = -1; render(); };
   $('#save', card).onclick = () => attempt(async () => {
     await send(`/api/tanks/${tankId}/layout`, 'PUT', {
@@ -1206,6 +1284,10 @@ async function pageDraw(arg) {
       bubbles: layout.settings.bubbles,
       spotlights: layout.spotlights.map(s => ({ id: s.id, areas: s.areas, home: s.home })),
     });
+    // Remember every animal's home size, and anything drawn or resized this time.
+    for (const s of layout.spotlights) if (s.home) sizes[`home:${s.name.trim().toLowerCase()}`] = { w: s.home.w, h: s.home.h };
+    if (layout.settings.bubbles) sizes.bubbles = { w: layout.settings.bubbles.w, h: layout.settings.bubbles.h };
+    if (Object.keys(sizes).length) await send('/api/shapes', 'PUT', sizes);
     flash('Saved');
     location.hash = `#tank/${tankId}`;
   });
@@ -1325,6 +1407,7 @@ async function pageFree() {
   const liveBox = el(`<div class="live"><img data-stream alt="live picture"><div class="tools"></div></div>`);
   $('img', liveBox).src = `/stream.mjpg?overlay=0&width=960&t=${Date.now()}`;
   $('.tools', liveBox).append(fsButton(liveBox));
+  zoomable(liveBox, $('img', liveBox));
   const rec = recordControls();
   const note = el(`<div class="card dim">No tank, no animals, no alerts in this mode. The live picture is always on; recording only when you press the button.
     A timelapse of each recording is made when it stops. Switch back to <b>Tank</b> at the top to watch a tank again.</div>`);
@@ -1412,6 +1495,7 @@ async function pageDash() {
   const img = $('img', dash);
   img.src = `/stream.mjpg?overlay=0&width=960&t=${Date.now()}`;
   const liveWrap = $('.dash-live', dash);
+  zoomable(liveWrap, img);
   img.onclick = () => { if (!liveWrap.classList.contains('fs')) goFullscreen(liveWrap); };
   const rec = recordControls(true);
   $('.dash-rec', dash).append(rec.box);
@@ -1471,6 +1555,106 @@ async function pageDash() {
   }
   if (status) draw(status);
   return { onStatus: draw, leave: () => clearInterval(clockTimer) };
+}
+
+
+// ---------- Zoom: pinch with two fingers, double tap, Ctrl + scroll, or the + and − buttons.
+// box is the frame that stays put; target is what gets magnified (it fills box at 1x).
+// oneFingerPan: when zoomed, one finger drags the picture around (off on the drawing screen, where
+// one finger draws; there two fingers move it).
+function zoomable(box, target, { oneFingerPan = true, onGesture = null } = {}) {
+  let s = 1, tx = 0, ty = 0;
+  const pts = new Map();
+  let pinch = null, pan = null, lastTap = 0;
+  box.classList.add('zoombox');
+  target.style.transformOrigin = '0 0';
+  const bar = el(`<div class="zoombar"><button type="button" data-z="in" aria-label="Zoom in">＋</button><button type="button" data-z="out" aria-label="Zoom out">−</button><button type="button" data-z="reset" aria-label="Back to whole picture" hidden>1×</button></div>`);
+  box.append(bar);
+  function clamp() {
+    const W = box.clientWidth, H = target.offsetHeight || box.clientHeight;
+    s = Math.min(8, Math.max(1, s));
+    if (s === 1) { tx = 0; ty = 0; return; }
+    tx = Math.min(0, Math.max(W - W * s, tx));
+    ty = Math.min(0, Math.max(H - H * s, ty));
+  }
+  function apply() {
+    clamp();
+    target.style.transform = s === 1 ? '' : `translate(${tx}px, ${ty}px) scale(${s})`;
+    box.classList.toggle('zoomed', s > 1);
+    $('[data-z=reset]', bar).hidden = s === 1;
+    $('[data-z=reset]', bar).textContent = `${s.toFixed(s < 2 ? 1 : 0)}× ⟲`;
+    box.dispatchEvent(new CustomEvent('zoom', { detail: s }));
+  }
+  function zoomAt(ns, cx, cy) {
+    ns = Math.min(8, Math.max(1, ns));
+    const k = ns / s;
+    tx = cx - (cx - tx) * k; ty = cy - (cy - ty) * k; s = ns; apply();
+  }
+  const local = e => { const r = box.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  bar.onclick = e => {
+    e.stopPropagation();
+    const z = e.target.dataset.z, W = box.clientWidth / 2, H = box.clientHeight / 2;
+    if (z === 'in') zoomAt(s * 1.6, W, H);
+    if (z === 'out') zoomAt(s / 1.6, W, H);
+    if (z === 'reset') { s = 1; apply(); }
+  };
+  bar.onpointerdown = e => e.stopPropagation();
+  box.addEventListener('wheel', e => {
+    if (!(e.ctrlKey || e.metaKey || e.altKey || s > 1)) return;     // plain scrolling still scrolls the page
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey || e.altKey) { const [x, y] = local(e); zoomAt(s * Math.exp(-e.deltaY * 0.01), x, y); }
+    else { tx -= e.deltaX; ty -= e.deltaY; apply(); }
+  }, { passive: false });
+  box.addEventListener('pointerdown', e => {
+    if (e.target.closest('.zoombar, .tools')) return;
+    pts.set(e.pointerId, local(e));
+    if (pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, s, mx: (a[0] + b[0]) / 2, my: (a[1] + b[1]) / 2, tx, ty };
+      pan = null;
+      onGesture && onGesture();
+      e.preventDefault(); e.stopPropagation();
+    } else if (pts.size === 1 && s > 1 && oneFingerPan) {
+      pan = { x: e.clientX, y: e.clientY, tx, ty, moved: false };
+    }
+  }, true);
+  box.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, local(e));
+    if (pinch && pts.size >= 2) {
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+      const ns = Math.min(8, Math.max(1, pinch.s * d / pinch.d)), k = ns / pinch.s;
+      s = ns; tx = mx - (pinch.mx - pinch.tx) * k; ty = my - (pinch.my - pinch.ty) * k; apply();
+      e.preventDefault(); e.stopPropagation();
+    } else if (pan) {
+      const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
+      if (Math.abs(dx) + Math.abs(dy) > 4) pan.moved = true;
+      tx = pan.tx + dx; ty = pan.ty + dy; apply();
+      e.preventDefault(); e.stopPropagation();
+    }
+  }, true);
+  const up = e => {
+    if (!pts.has(e.pointerId)) return;
+    const wasPinch = !!pinch, moved = pan && pan.moved;
+    pts.delete(e.pointerId);
+    if (pts.size < 2) pinch = null;
+    if (pts.size === 0) {
+      pan = null;
+      if (wasPinch || moved) { e.stopPropagation(); box.dataset.justGestured = '1'; setTimeout(() => delete box.dataset.justGestured, 350); return; }
+      if (oneFingerPan && e.pointerType !== 'mouse') {        // double tap toggles 2.5x where you tapped
+        const now = Date.now();
+        if (now - lastTap < 300) { const [x, y] = local(e); if (s > 1) { s = 1; apply(); } else zoomAt(2.5, x, y); lastTap = 0; box.dataset.justGestured = '1'; setTimeout(() => delete box.dataset.justGestured, 350); }
+        else lastTap = now;
+      }
+    }
+  };
+  box.addEventListener('pointerup', up, true);
+  box.addEventListener('pointercancel', up, true);
+  // A click that ended a pinch, a pan or a double tap isn't a tap on the picture.
+  box.addEventListener('click', e => { if (box.dataset.justGestured && !e.target.closest('.zoombar')) { e.stopPropagation(); e.preventDefault(); } }, true);
+  addEventListener('resize', () => apply());
+  return { reset: () => { s = 1; apply(); }, get scale() { return s; } };
 }
 
 pollStatus().then(route);

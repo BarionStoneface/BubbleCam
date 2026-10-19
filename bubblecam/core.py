@@ -25,7 +25,7 @@ from .presence import PresenceManager
 from .recorder import Recorder
 from .storage import Storage
 from .summary import incidents, morning_text, night_bounds, tank_summary
-from .tanks import IDENTITY, MAX_SPOTLIGHTS, TankStore, transform_rect
+from .tanks import IDENTITY, MAX_SPOTLIGHTS, TankStore, transform_rect, watch_areas
 from .timelapse import TimelapseWorker
 from .tracks import Behaviour
 from .viewmatch import ViewTracker
@@ -194,7 +194,7 @@ class App:
         if tank is None:
             self.detector.set_layout({}, [])
         else:
-            spots = {s.id: [transform_rect(a, A) for a in s.areas] for s in tank.spotlights}
+            spots = {s.id: [transform_rect(a, A) for a in watch_areas(s)] for s in tank.spotlights}
             ignore = [transform_rect(r, A) for r in tank.setting("ignore")]
             bubbles = tank.setting("bubbles")
             self.detector.set_layout(spots, ignore, transform_rect(bubbles, A) if bubbles else None)

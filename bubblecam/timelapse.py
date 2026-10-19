@@ -141,6 +141,11 @@ def plan(segments: list[dict], cfg: Config, p: TimelapseParams, start_ts: float,
 
     spot_ref = tank.zone_threshold if tank else cfg.zone_events.threshold
     raw = interest(spot, tankm, p.driver, spot_ref, cfg.burst_events.floor)
+    if p.driver != "tank" and len(raw) and float(np.mean(raw > 0.2)) < 0.002:
+        # The animals' boxes saw (next to) nothing all night: boxes in the wrong place, or the animal
+        # never came by. Racing through ten hours at top speed helps nobody; slow for whole tank
+        # movement instead.
+        raw = np.maximum(raw, interest(spot, tankm, "tank", spot_ref, cfg.burst_events.floor))
     speed = speed_curve(ease(ts, raw, p.ease_seconds), p.min_speed, p.max_speed)
     starts, ends = windows(ts, speed, p.output_fps, fps)
 

@@ -53,6 +53,20 @@ def invert(A: np.ndarray) -> np.ndarray:
     return np.linalg.inv(M)[:2]
 
 
+def watch_areas(spot) -> list[dict]:
+    """Where an animal's movement is measured: the areas drawn for it, plus its home and a margin
+    around the home (coming and going happens at the door). An animal with only a home box drawn
+    is still watched."""
+    areas = list(spot.areas)
+    if spot.home:
+        h = spot.home
+        mx, my = h["w"] * 0.5, h["h"] * 0.5
+        x0, y0 = max(0.0, h["x"] - mx), max(0.0, h["y"] - my)
+        x1, y1 = min(1.0, h["x"] + h["w"] + mx), min(1.0, h["y"] + h["h"] + my)
+        areas.append({"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0})
+    return areas
+
+
 def clean_rect(r: dict | None) -> dict | None:
     if not r:
         return None

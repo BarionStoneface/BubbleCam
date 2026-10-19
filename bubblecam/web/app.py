@@ -681,6 +681,26 @@ def create_app(core: App) -> FastAPI:
             "perf": perf(),
         }
 
+    # Remembered box sizes: "Cheeks' home is about this big", so after moving the camera a box can be
+    # dropped with one tap and nudged into place. Keyed by what the box is for and the animal's name.
+
+    @api.get("/api/shapes")
+    def get_shapes():
+        return json.loads(db.get("shapes", "{}"))
+
+    @api.put("/api/shapes")
+    def put_shapes(body: dict):
+        shapes = json.loads(db.get("shapes", "{}"))
+        for key, v in body.items():
+            try:
+                w, h = float(v["w"]), float(v["h"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if 0.005 < w <= 1 and 0.005 < h <= 1 and len(key) <= 80:
+                shapes[key] = {"w": w, "h": h}
+        db.set("shapes", json.dumps(shapes))
+        return shapes
+
     # Modes and free recording
 
     @api.get("/api/mode")
