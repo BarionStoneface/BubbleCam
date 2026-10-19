@@ -66,7 +66,7 @@ else
       note ""
       note "EVERYTHING on $DEV (${STICKS[$((pick - 1))]#* }) will be erased."
       read -r -p "    Type ERASE to go ahead: " confirm </dev/tty
-      if [[ "$confirm" == "ERASE" ]]; then
+      if [[ "${confirm^^}" == "ERASE" ]]; then
         # The desktop may have auto-opened it.
         for part in $(lsblk -lnpo NAME "$DEV" | tail -n +2); do sudo umount "$part" 2>/dev/null || true; done
         sudo wipefs -aq "$DEV"
@@ -83,7 +83,7 @@ else
         DATA_DIR="$MOUNT/data"
         note "stick ready"
       else
-        note "skipped; nothing was erased"
+        note "skipped (you typed \"$confirm\", not ERASE); nothing was erased"
       fi
     fi
   fi
