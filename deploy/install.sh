@@ -50,7 +50,10 @@ if mountpoint -q "$MOUNT"; then
   DATA_DIR="$MOUNT/data"
   note "using the USB stick already set up at $MOUNT"
 else
-  mapfile -t STICKS < <(lsblk -dpno NAME,TRAN,SIZE,MODEL | awk '$2=="usb"')
+  # Never offer the drive the Pi itself runs from (a Pi can boot from a USB SSD).
+  ROOT_DISK="/dev/$(lsblk -no PKNAME "$(findmnt -no SOURCE /)" 2>/dev/null | head -1)"
+  BOOT_DISK="/dev/$(lsblk -no PKNAME "$(findmnt -no SOURCE /boot/firmware 2>/dev/null || echo none)" 2>/dev/null | head -1)"
+  mapfile -t STICKS < <(lsblk -dpno NAME,TRAN,SIZE,MODEL | awk -v r="$ROOT_DISK" -v b="$BOOT_DISK" '$2=="usb" && $1!=r && $1!=b')
   if (( ${#STICKS[@]} == 0 )); then
     note "no USB stick found. Footage will go on the SD card for now (fine for testing,"
     note "but it fills up fast). Plug in a stick and run this script again to switch."
