@@ -1410,7 +1410,7 @@ async function pageDash() {
     </aside></div>`);
   view.append(dash);
   const img = $('img', dash);
-  img.src = `/stream.mjpg?overlay=0&width=1280&t=${Date.now()}`;
+  img.src = `/stream.mjpg?overlay=0&width=960&t=${Date.now()}`;
   const liveWrap = $('.dash-live', dash);
   img.onclick = () => { if (!liveWrap.classList.contains('fs')) goFullscreen(liveWrap); };
   const rec = recordControls(true);

@@ -39,7 +39,7 @@ class RecordConfig:
 class DetectConfig:
     # Analysis runs on a shrunken copy of the frame; cheap enough for every frame on a Pi 4.
     analysis_width: int = 320
-    analyze_every: int = 1
+    analyze_every: int = 2           # motion is analysed on every Nth frame; 2 = 15 a second, plenty for fish
     # How fast the background model forgets (per analyzed frame). Lower = slow movers stand out longer.
     background_alpha: float = 0.01
     # Pixel brightness difference that counts as "changed" (0 to 255).
