@@ -129,6 +129,8 @@ function stopStreams() { $$('img[data-stream]').forEach(img => { img.src = ''; }
 async function pollStatus() {
   try {
     status = await api('/api/status');
+    setReachable(true);
+    $('#gear').classList.toggle('dot', !!status.update_available);
     if (status.mode !== mode) applyMode(status.mode);
     const h = status.health;
     const btn = $('#health');
@@ -139,6 +141,7 @@ async function pollStatus() {
   } catch (e) {
     $('#health').className = 'health problem';
     $('#health span').textContent = "Can't reach BubbleCam";
+    setReachable(false);
   }
 }
 setInterval(() => { if (!document.hidden) pollStatus(); }, 3000);
@@ -1063,6 +1066,8 @@ async function pageSetup() {
   $('#savecheck', notifyCard).onclick = () => attempt(async () => { await send('/api/notify', 'PUT', { checkin_url: $('#checkin', notifyCard).value }); flash('Saved'); });
   view.append(notifyCard);
 
+  view.append(installCard());
+
   const phoneCard = el('<div class="card"><h3>On your phone</h3><p class="dim" style="margin:6px 0 0">Checking…</p></div>');
   view.append(phoneCard);
   api('/api/pi').then(p => {
@@ -1093,6 +1098,7 @@ async function pageSetup() {
   }).catch(() => { phoneCard.innerHTML = '<h3>On your phone</h3><p class="dim" style="margin:6px 0 0">Couldn\'t check Tailscale right now.</p>'; });
 
   const piCard = el(`<div class="card"><h3>This Pi</h3>
+    <div class="row" style="margin-top:8px"><span class="dim grow" id="ver">${versionLine(st)}</span><button class="btn small" type="button" id="upd">Check for updates</button></div>
     <div class="row" style="margin-top:10px">
       <a class="btn small" href="/?kiosk#dash">Monitor dashboard</a>
       <a class="btn small" href="/?kiosk#live">Full screen live view</a>
@@ -1101,6 +1107,7 @@ async function pageSetup() {
       <button class="btn small warm" data-pi="shutdown" data-ask="Shut the Pi down? Unplug it once the green light stops blinking. Nothing records until it's turned on again.">Shut down the Pi</button>
     </div></div>`);
   piCard.onclick = async e => { const a = e.target.dataset.pi; if (a && await ask(e.target.dataset.ask, { yes: e.target.textContent })) piAction(a); };
+  $('#upd', piCard).onclick = e => attempt(async () => { e.target.disabled = true; try { await updateFlow(e.target); } finally { e.target.disabled = false; } });
   view.append(piCard);
 
   view.append(el('<a class="btn" href="#advanced" style="justify-self:start">Advanced settings and system details</a>'));
@@ -1121,12 +1128,14 @@ if (document.body.classList.contains('kiosk')) {
     const body = openSheet(`<h3 style="margin-bottom:10px">BubbleCam</h3><div style="display:grid;gap:8px">
       <button class="btn" data-go="/?kiosk#dash">Dashboard</button>
       <button class="btn" data-go="/#tanks">Open the app on this screen</button>
+      <button class="btn" data-go="update">Update the app</button>
       <button class="btn" data-pi="exit_kiosk">Exit to the desktop</button>
       <button class="btn" data-pi="restart_app" data-ask="Restart BubbleCam? Recording pauses for about ten seconds.">Restart BubbleCam</button>
       <button class="btn" data-pi="reboot" data-ask="Restart the Pi?">Restart the Pi</button>
       <button class="btn warm" data-pi="shutdown" data-ask="Shut the Pi down? Nothing records until it's turned on again.">Shut down the Pi</button>
     </div>`);
     body.onclick = async e => {
+      if (e.target.dataset.go === 'update') { $('#sheet').close(); attempt(() => updateFlow()); return; }
       if (e.target.dataset.go) location.href = e.target.dataset.go;
       const a = e.target.dataset.pi;
       if (!a) return;
@@ -1656,5 +1665,73 @@ function zoomable(box, target, { oneFingerPan = true, onGesture = null } = {}) {
   addEventListener('resize', () => apply());
   return { reset: () => { s = 1; apply(); }, get scale() { return s; } };
 }
+
+
+// ---------- Offline: the Pi can't be reached
+
+const isAndroid = /Android/i.test(navigator.userAgent), isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+$('#open-ts').href = isAndroid
+  ? 'intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=com.tailscale.ipn;S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dcom.tailscale.ipn;end'
+  : isIOS ? 'https://apps.apple.com/app/tailscale/id1470499037' : 'https://tailscale.com/download';
+if (!isAndroid && !isIOS) $('#open-ts').textContent = 'Get Tailscale';
+let failures = 0, updating = false;
+function setReachable(ok) {
+  failures = ok ? 0 : failures + 1;
+  const show = !ok && failures >= 2 && !updating;
+  $('#offline').hidden = !show;
+  if (ok && document.body.dataset.wasOffline) { delete document.body.dataset.wasOffline; route(); }
+  if (show) document.body.dataset.wasOffline = '1';
+}
+$('#retry').onclick = async () => { $('#offline-note').textContent = 'Trying…'; await pollStatus(); $('#offline-note').textContent = failures ? 'Still no answer.' : ''; };
+if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+// ---------- Install on the home screen
+
+let installPrompt = null;
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; document.body.classList.add('can-install'); });
+addEventListener('appinstalled', () => { installPrompt = null; document.body.classList.remove('can-install'); flash('BubbleCam is on your home screen'); });
+const installed = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+function installCard() {
+  const card = el(`<div class="card"><h3>BubbleCam on this ${isAndroid || isIOS ? 'phone or tablet' : 'device'}</h3><div class="inst"></div></div>`);
+  const box = $('.inst', card);
+  if (installed()) box.innerHTML = '<p class="dim" style="margin:6px 0 0">Installed: open it from the BubbleCam icon on the home screen.</p>';
+  else if (installPrompt) {
+    box.innerHTML = '<p class="dim" style="margin:6px 0 10px">Put a BubbleCam icon on the home screen, so it opens like an app.</p><button class="btn primary" type="button">Add BubbleCam to the home screen</button>';
+    $('button', box).onclick = async () => { installPrompt.prompt(); await installPrompt.userChoice.catch(() => {}); installPrompt = null; route(); };
+  } else if (!isSecureContext) {
+    box.innerHTML = '<p class="dim" style="margin:6px 0 0">To get the app icon, open BubbleCam through its Tailscale address (the one starting https://), then come back here.</p>';
+  } else {
+    box.innerHTML = `<p class="dim" style="margin:6px 0 0">${isIOS ? 'In Safari, tap the Share button, then <b>Add to Home Screen</b>.' : 'Open the browser menu (⋮), then <b>Add to Home screen</b> or <b>Install app</b>.'}</p>`;
+  }
+  return card;
+}
+
+// ---------- Updating the app
+
+async function updateFlow(btn) {
+  const info = await api('/api/update?force=true');
+  if (info.error) throw new Error(info.error);
+  if (!info.available) { flash(`Up to date (version ${info.version})`); return info; }
+  const list = (info.changes || []).slice(0, 6).map(c => `• ${c}`).join('\n');
+  if (!await ask(`There's a newer version with ${info.behind} change${info.behind === 1 ? '' : 's'}:\n\n${list}\n\nUpdate now? Recording pauses for about ten seconds while it restarts.`, { yes: 'Update' })) return info;
+  updating = true;
+  const old = status && status.version;
+  if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
+  const r = await send('/api/update', 'POST');
+  const body = openSheet(`<h3>Updating BubbleCam</h3><p class="dim">Getting the new version and restarting. This page reloads by itself in a few seconds.</p>`);
+  for (let i = 0; i < 60; i++) {
+    await new Promise(res => setTimeout(res, 2000));
+    try { const st = await api('/api/status'); if (st.version && st.version !== old) break; } catch (e) {}
+  }
+  if (r.needs_installer) localStorage.setItem('bc-needs-installer', '1');
+  location.reload();
+  return info;
+}
+function versionLine(st) {
+  const v = st && st.version;
+  return v ? `Version ${v}${st.update_available ? ' · <b style="color:var(--accent)">update ready</b>' : ''}` : '';
+}
+try { if (localStorage.getItem('bc-needs-installer')) { localStorage.removeItem('bc-needs-installer');
+  setTimeout(() => openSheet('<h3>Updated</h3><p>This update also changed the Pi set up. When you\'re next at the Pi, run <code>./deploy/install.sh</code> from the BubbleCam folder once.</p>'), 800); } } catch (e) {}
 
 pollStatus().then(route);

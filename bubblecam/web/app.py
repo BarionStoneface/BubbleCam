@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import pi
+from ..update import Updater
 from ..core import App, encode_view
 from ..media import FrameReader, readable
 from ..recorder import act_path, read_act
@@ -110,6 +111,24 @@ def create_app(core: App) -> FastAPI:
             html = html.replace(f"/static/{name}", f"/static/{name}?v={v}")
         return Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})
 
+    @api.get("/sw.js")
+    def service_worker():
+        return FileResponse(STATIC / "sw.js", media_type="text/javascript",
+                            headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+    updater = Updater()
+
+    @api.get("/api/update")
+    async def update_check(force: bool = False):
+        return await run_in_threadpool(updater.check, force)
+
+    @api.post("/api/update")
+    async def update_apply():
+        r = await run_in_threadpool(updater.apply)
+        if not r["ok"]:
+            raise HTTPException(409, r["error"])
+        return r
+
     @api.get("/manifest.webmanifest")
     def manifest():
         return FileResponse(STATIC / "manifest.webmanifest", media_type="application/manifest+json")
@@ -183,6 +202,8 @@ def create_app(core: App) -> FastAPI:
             "settling": core.scores.settling,
             "maintenance_until": core.maintenance_until(core.tank_id),
             "mode": core.mode,
+            "version": updater.current["version"],
+            "update_available": bool(updater.info.get("available")),
             "free": core.free.status(),
             "recording": core.active_recorder() is not None,
             "encoder": core.recorder.encoder if core.recorder else None,

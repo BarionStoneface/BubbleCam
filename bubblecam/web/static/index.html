@@ -7,7 +7,10 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/static/icon.svg">
-<link rel="apple-touch-icon" href="/static/icon.svg">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="BubbleCam">
 <link rel="stylesheet" href="/static/style.css">
 <title>BubbleCam</title>
 </head>
@@ -21,6 +24,19 @@
 </header>
 
 <main id="view"></main>
+
+<div id="offline" hidden>
+  <div class="offline-card">
+    <img src="/static/icon-192.png" alt="" width="72" height="72">
+    <h2>Can't reach BubbleCam</h2>
+    <p class="dim">The app is fine; it can't get through to the Pi right now. Usually one of these:</p>
+    <ol>
+      <li><b>Away from home?</b> The Tailscale app needs to be switched on.<div class="row" style="margin-top:8px"><a class="btn primary" id="open-ts">Open Tailscale</a></div></li>
+      <li><b>At home?</b> Check the Pi is switched on (its green light flickers) and the Wi-Fi is working.</li>
+    </ol>
+    <div class="row"><button class="btn" id="retry" type="button">Try again</button><span class="dim" id="offline-note"></span></div>
+  </div>
+</div>
 
 <nav class="tabs" id="tabs">
   <a href="#free" data-tab="free" data-mode="free"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z"/></svg>Camera</a>

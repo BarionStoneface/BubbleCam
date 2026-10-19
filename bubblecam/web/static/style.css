@@ -109,6 +109,7 @@ label.field { display: grid; gap: 5px; font-size: var(--text-sm); color: var(--d
 
 /* Tanks */
 .tank-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: var(--gap); }
+.tank-grid:has(> :only-child) { grid-template-columns: minmax(0, 860px); justify-content: center; }
 .tank-card { padding: 0; overflow: hidden; cursor: pointer; text-align: left; color: inherit; text-decoration: none; display: block; }
 .tank-card .pic { position: relative; aspect-ratio: 16 / 10; background: #000; }
 .tank-card .pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -278,6 +279,16 @@ body.immersive .top, body.immersive .tabs, body.immersive .kiosk-menu { display:
 #pzoom video { display: block; }
 .dash-live .zoombar { bottom: 10px; }
 .live.fs .zoombar, .dash-live.fs .zoombar { bottom: 16px; left: 16px; }
+
+/* Can't reach the Pi */
+#offline { position: fixed; inset: 0; z-index: 200; background: var(--bg); display: grid; place-items: center; padding: var(--pad); overflow: auto; }
+#offline[hidden] { display: none; }
+.offline-card { max-width: 460px; display: grid; gap: 12px; }
+.offline-card img { border-radius: 18px; }
+.offline-card ol { margin: 0; padding-left: 20px; display: grid; gap: 14px; }
+.gear.dot { position: relative; }
+.gear.dot::after { content: ''; position: absolute; top: 7px; right: 6px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+#ask-text { white-space: pre-line; }
 
 /* Phone card QR and the kiosk corner menu */
 .qr { width: 180px; height: 180px; background: #fff; border-radius: var(--radius-sm); padding: 6px; flex: none; }
