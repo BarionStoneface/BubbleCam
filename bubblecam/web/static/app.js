@@ -75,7 +75,9 @@ function goFullscreen(box) {
   if (box.classList.contains('fs') || document.fullscreenElement) return exit();
   box.classList.add('fs'); document.body.classList.add('immersive');
   $$('.fs-btn', box).forEach(b => { b.textContent = '✕ Exit full screen'; });
-  const req = box.requestFullscreen || box.webkitRequestFullscreen;
+  // In the installed app there are no browser bars to hide, so filling the app is enough, and the
+  // browser's "to exit full screen..." notice never appears.
+  const req = installed() ? null : (box.requestFullscreen || box.webkitRequestFullscreen);
   if (req) {
     Promise.resolve(req.call(box)).then(() => {
       try { screen.orientation.lock('landscape').catch(() => {}); } catch (e) {}
@@ -593,6 +595,14 @@ function playUrl(src, title, info = '') {
       if (e.target.closest('.zoombar') || v.controls) return;
       v.paused ? v.play().catch(() => {}) : v.pause();
     });
+    if (installed()) {
+      // Same idea for videos: our own full screen, without the browser's notice.
+      v.setAttribute('controlslist', 'nofullscreen');
+      const fsb = el('<button type="button" aria-label="Full screen">⛶</button>');
+      fsb.onclick = e => { e.stopPropagation(); $('#player').classList.toggle('fs'); playerZoom.reset(); };
+      $('.zoombar', wrap).append(fsb);
+      $('#player').addEventListener('close', () => $('#player').classList.remove('fs'));
+    }
   }
   playerZoom.reset();
   $('#pvideo').src = src;
