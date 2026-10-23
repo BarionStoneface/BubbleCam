@@ -9,5 +9,9 @@ if [ "$1" = "full" ]; then
     "http://localhost:8080/?kiosk#dash"
 fi
 # Its own browser profile, so it's a separate app window with its own icon, whatever else is open.
-exec "$BROWSER" --app="http://localhost:8080/#dash" --start-maximized --class=BubbleCam \
-  --user-data-dir="$HOME/.config/bubblecam-window" --password-store=basic --no-first-run --noerrdialogs
+# A sensible size the first time; after that it opens the size and place you last left it.
+PROFILE="$HOME/.config/bubblecam-window"
+SIZE=""
+[ -d "$PROFILE" ] || SIZE="--window-size=1024,700"
+exec "$BROWSER" --app="http://localhost:8080/#dash" $SIZE --class=BubbleCam \
+  --user-data-dir="$PROFILE" --password-store=basic --no-first-run --noerrdialogs

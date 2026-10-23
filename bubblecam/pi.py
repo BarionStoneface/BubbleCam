@@ -87,7 +87,7 @@ def qr_svg(text: str) -> str | None:
 
 def install_launchers(repo: Path, home: Path | None = None) -> list[str]:
     """Icons for the Pi's own screen: on the desktop and in the menu, one for a normal window and one
-    for full screen. The screen at login opens the normal window (maximised) rather than full screen.
+    for full screen. The screen at login opens the normal window rather than full screen.
     Only on a Pi with a desktop; rewritten only when something changed. Returns what it wrote."""
     home = home or Path.home()
     if not (home / ".config" / "labwc").exists() and not shutil.which("chromium") and not shutil.which("chromium-browser"):
