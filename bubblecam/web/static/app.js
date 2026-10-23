@@ -849,7 +849,7 @@ async function pageTimelapses() {
     for (const r of rows) {
       const p = r.params || {};
       const title = r.auto ? `Night of ${dayName(r.start_ts)}` : `${dayTime(r.start_ts)} to ${dayTime(r.end_ts)}`;
-      const state = r.status === 'rendering' ? `<div style="height:6px;background:var(--line);border-radius:3px;overflow:hidden"><i style="display:block;height:100%;width:${Math.round(r.progress * 100)}%;background:var(--accent)"></i></div>`
+      const state = r.status === 'rendering' ? `<div class="dim">Making it… ${Math.round(r.progress * 100)}%</div><div style="height:6px;background:var(--line);border-radius:3px;overflow:hidden"><i style="display:block;height:100%;width:${Math.max(2, Math.round(r.progress * 100))}%;background:var(--accent)"></i></div>`
         : r.status === 'queued' ? '<span class="dim">Waiting its turn</span>'
         : r.status === 'failed' ? `<span style="color:var(--bad)">Couldn't make this one: ${esc(r.error || '')}</span>` : '';
       const card = el(`<div class="card" style="display:grid;gap:10px"><div style="display:grid;gap:4px"><b>${esc(title)}</b>

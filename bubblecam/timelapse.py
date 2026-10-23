@@ -40,6 +40,7 @@ class TimelapseParams:
     driver: str = "spots"         # "spots" (all spotlighted animals), "spot:<slot>", "tank" or "both"
     output_fps: int = 30
     overlay: bool = True
+    max_seconds: float = 240.0    # longest the finished timelapse may run; 0 = no limit
 
 
 def interest(spot: np.ndarray, tank: np.ndarray, driver: str, spot_ref: float, tank_ref: float) -> np.ndarray:
@@ -79,6 +80,32 @@ def speed_curve(smooth: np.ndarray, min_speed: float, max_speed: float) -> np.nd
     min_speed = max(1.0, min_speed)
     max_speed = max(min_speed, max_speed)
     return max_speed * (min_speed / max_speed) ** smooth
+
+
+def fit_length(ts: np.ndarray, speed: np.ndarray, max_speed: float, max_seconds: float,
+               nominal_fps: float) -> np.ndarray:
+    """Speed everything up by one factor until the result runs at most max_seconds, keeping the
+    shape: busy stretches stay slower than quiet ones. A busy night would otherwise make a half hour
+    timelapse that takes the Pi hours to build."""
+    if max_seconds <= 0 or len(ts) < 2:
+        return speed
+    dt = np.clip(np.diff(ts, append=ts[-1] + 1.0 / nominal_fps), 0, 2.0 / nominal_fps)
+    length = lambda f, cap: float(np.sum(dt / np.minimum(speed * f, cap)))
+    if length(1.0, max_speed) <= max_seconds:
+        return speed
+    cap = max_speed
+    if length(1e9, max_speed) > max_seconds:      # even all at top speed is too long: raise the top
+        cap = np.inf
+    lo, hi = 1.0, 2.0
+    while length(hi, cap) > max_seconds and hi < 1e6:
+        hi *= 2
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if length(mid, cap) > max_seconds:
+            lo = mid
+        else:
+            hi = mid
+    return np.minimum(speed * hi, cap)
 
 
 def windows(ts: np.ndarray, speed: np.ndarray, output_fps: int, nominal_fps: float) -> tuple[np.ndarray, np.ndarray]:
@@ -147,6 +174,7 @@ def plan(segments: list[dict], cfg: Config, p: TimelapseParams, start_ts: float,
         # movement instead.
         raw = np.maximum(raw, interest(spot, tankm, "tank", spot_ref, cfg.burst_events.floor))
     speed = speed_curve(ease(ts, raw, p.ease_seconds), p.min_speed, p.max_speed)
+    speed = fit_length(ts, speed, p.max_speed, getattr(p, "max_seconds", 0) or 0, fps)
     starts, ends = windows(ts, speed, p.output_fps, fps)
 
     # Lookup: (segment, main frame index) -> proxy frame index.

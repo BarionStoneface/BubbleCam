@@ -39,3 +39,25 @@ def test_windows_fast_and_gap():
     # 200 s of footage at 100x = 2 s of output = 60 frames; the hour gap adds nothing.
     assert 58 <= len(starts) <= 62
     assert (np.diff(starts) > 0).all() and ends[-1] == len(ts) - 1
+
+
+def test_busy_night_is_capped_but_keeps_its_shape():
+    from bubblecam.timelapse import fit_length
+    fps = 30.0
+    ts = np.arange(0, 10 * 3600, 1 / fps)               # ten hours
+    speed = np.full(len(ts), 300.0)
+    busy = (ts > 3600) & (ts < 3 * 3600)                # two hours of an active animal
+    speed[busy] = 2.0
+    before = np.sum(1 / fps / speed)                     # about an hour of output
+    assert before > 3000
+    out = fit_length(ts, speed, 300.0, 240.0, fps)
+    after = np.sum(1 / fps / out)
+    assert 230 < after <= 241
+    assert out[busy].max() < out[~busy].min()            # busy still slower than quiet
+
+
+def test_short_night_is_left_alone():
+    from bubblecam.timelapse import fit_length
+    ts = np.arange(0, 3600, 1 / 30)
+    speed = np.full(len(ts), 300.0)
+    assert np.array_equal(fit_length(ts, speed, 300.0, 240.0, 30.0), speed)
