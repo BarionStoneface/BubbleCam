@@ -784,6 +784,8 @@ def create_app(core: App) -> FastAPI:
     @api.get("/api/pi")
     async def pi_info():
         info = await run_in_threadpool(pi.tailscale, cfg.web.port)
+        if cfg.web.host in ("127.0.0.1", "localhost", "::1"):
+            info["lan_url"] = None      # only reachable through Tailscale's https address, by design
         info["qr"] = pi.qr_svg(info["url"]) if info["url"] and info["serving"] else None
         return info
 
