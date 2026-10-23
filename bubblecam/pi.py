@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import socket
 import subprocess
+from pathlib import Path
 
 log = logging.getLogger("bubblecam.pi")
 
@@ -81,6 +83,44 @@ def qr_svg(text: str) -> str | None:
         return None
     img = qrcode.make(text, image_factory=svg.SvgPathImage, box_size=10, border=2)
     return img.to_string(encoding="unicode")
+
+
+def install_launchers(repo: Path, home: Path | None = None) -> list[str]:
+    """Icons for the Pi's own screen: on the desktop and in the menu, one for a normal window and one
+    for full screen. The screen at login opens the normal window (maximised) rather than full screen.
+    Only on a Pi with a desktop; rewritten only when something changed. Returns what it wrote."""
+    home = home or Path.home()
+    if not (home / ".config" / "labwc").exists() and not shutil.which("chromium") and not shutil.which("chromium-browser"):
+        return []
+    opener = repo / "deploy" / "open.sh"
+    icon = repo / "bubblecam" / "web" / "static" / "icon-512.png"
+    entries = {
+        "bubblecam.desktop": ("BubbleCam", "Watch the tank", f"{opener}"),
+        "bubblecam-fullscreen.desktop": ("BubbleCam full screen", "Watch the tank, full screen", f"{opener} full"),
+    }
+    written = []
+    targets = [home / ".local" / "share" / "applications"]
+    if (home / "Desktop").is_dir():
+        targets.append(home / "Desktop")
+    for folder in targets:
+        folder.mkdir(parents=True, exist_ok=True)
+        for fname, (name, comment, exe) in entries.items():
+            text = ("[Desktop Entry]\nType=Application\n"
+                    f"Name={name}\nComment={comment}\nExec={exe}\nIcon={icon}\n"
+                    "Terminal=false\nCategories=AudioVideo;Video;\nStartupWMClass=BubbleCam\n")
+            path = folder / fname
+            if not path.exists() or path.read_text() != text:
+                path.write_text(text)
+                path.chmod(0o755)
+                written.append(str(path))
+    autostart = home / ".config" / "labwc" / "autostart"
+    if autostart.exists():
+        lines = autostart.read_text().splitlines()
+        new = [f"{opener} &" if "deploy/kiosk.sh" in l else l for l in lines]
+        if new != lines:
+            autostart.write_text("\n".join(new) + "\n")
+            written.append(str(autostart))
+    return written
 
 
 def act(name: str) -> tuple[bool, str]:

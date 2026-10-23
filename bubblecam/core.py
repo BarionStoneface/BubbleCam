@@ -318,6 +318,13 @@ class App:
     # Main loop
 
     def start(self) -> None:
+        try:
+            from .pi import install_launchers
+            from .update import REPO
+            for path in install_launchers(REPO):
+                log.info("added %s", path)
+        except Exception:
+            log.exception("couldn't add the desktop icons")
         self.capture_thread = threading.Thread(target=self._capture_loop, name="capture", daemon=True)
         self.capture_thread.start()
         self.view.start()
