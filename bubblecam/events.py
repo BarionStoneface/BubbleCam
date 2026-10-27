@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import logging
+import json
 import time
 from pathlib import Path
 
@@ -40,8 +41,11 @@ class Hysteresis:
         self.peak = 0.0
         self.peak_ts = 0.0
         self.peak_frame: np.ndarray | None = None
+        self.peak_box: list[float] | None = None
+        self.started_at: float | None = None       # candidate_since when it became a moment
 
-    def update(self, on: bool, ts: float, value: float, frame: np.ndarray) -> str | None:
+    def update(self, on: bool, ts: float, value: float, frame: np.ndarray,
+               box: list[float] | None = None) -> str | None:
         if on:
             if not self.active and (self.candidate_since is None or ts - self.last_true > GAP_TOLERANCE):
                 self.candidate_since = ts
@@ -49,10 +53,13 @@ class Hysteresis:
             if value > self.peak:
                 self.peak, self.peak_ts = value, ts
                 self.peak_frame = _thumb(frame)
+                if box:
+                    self.peak_box = box
         if not self.active:
             if on and ts - self.candidate_since >= self.start_s:
                 self.active = True
                 self.active_since = ts
+                self.started_at = self.candidate_since
                 return "start"
             if not on and self.candidate_since is not None and ts - self.last_true > GAP_TOLERANCE:
                 self.reset()
@@ -71,6 +78,56 @@ class Hysteresis:
         self.candidate_since = None
         self.peak = 0.0
         self.peak_frame = None
+        self.peak_box = None
+        self.started_at = None
+
+
+# Every moment keeps this much more before the action and after it than the per kind settings say,
+# so you see what led up to it and how it ended.
+EXTRA_ROLL = 5.0
+
+# Which kinds of moment are kept. Bursts (the whole tank suddenly busier) and darts (one fish
+# shooting across a quiet tank) are mostly noise in a busy community tank, so they're off unless
+# switched on in Setup.
+DEFAULT_KINDS = {"spot": True, "feeding": True, "chase": True, "dart": False, "burst": False}
+
+
+def union_box(boxes, within=None) -> list[float] | None:
+    """Smallest box around the given (x, y, w, h) boxes, optionally only those overlapping `within`
+    areas (dicts with x, y, w, h)."""
+    sel = []
+    for b in boxes:
+        x, y, w, h = b[:4]
+        if within is not None and not any(x < a["x"] + a["w"] and x + w > a["x"] and y < a["y"] + a["h"] and y + h > a["y"]
+                                          for a in within):
+            continue
+        sel.append((x, y, x + w, y + h))
+    if not sel:
+        return None
+    x0, y0 = min(s[0] for s in sel), min(s[1] for s in sel)
+    x1, y1 = max(s[2] for s in sel), max(s[3] for s in sel)
+    pad = 0.02
+    x0, y0, x1, y1 = max(0.0, x0 - pad), max(0.0, y0 - pad), min(1.0, x1 + pad), min(1.0, y1 + pad)
+    return [round(x0, 4), round(y0, 4), round(x1 - x0, 4), round(y1 - y0, 4)]
+
+
+def busiest_box(boxes, top_only: bool = False, grid: int = 4) -> list[float] | None:
+    """For whole tank moments (feeding, bursts) in a busy tank, everything moves somewhere, so a
+    box around all of it is useless. Find the patch where most is moving: the busiest cell of a
+    grid plus touching cells nearly as busy, and box the movement there."""
+    if top_only:
+        top = [b for b in boxes if b[1] + b[3] / 2 < 0.4]
+        boxes = top or boxes
+    if not boxes:
+        return None
+    load = np.zeros((grid, grid))
+    cell = lambda b: (min(grid - 1, int((b[1] + b[3] / 2) * grid)), min(grid - 1, int((b[0] + b[2] / 2) * grid)))
+    for b in boxes:
+        load[cell(b)] += b[2] * b[3]
+    r, c = np.unravel_index(int(load.argmax()), load.shape)
+    keep = {(r, c)} | {(r + dr, c + dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+                       if 0 <= r + dr < grid and 0 <= c + dc < grid and load[r + dr, c + dc] >= 0.5 * load[r, c]}
+    return union_box([b for b in boxes if cell(b) in keep])
 
 
 def _thumb(frame: np.ndarray, width: int = 480) -> np.ndarray:
@@ -111,6 +168,7 @@ class EventManager:
         self.closed_listeners: list = []   # fn(event_id) when an event ends
         self.tank = None
         self.open_ids: dict[str, int] = {}
+        self.kinds = dict(DEFAULT_KINDS)      # set by the app from the Setup choices
         self.set_tank(None, time.time())
 
     def set_tank(self, tank, ts: float) -> None:
@@ -148,8 +206,10 @@ class EventManager:
             on = value >= threshold and not quiet
             if on and not self._slow_inside(spot_id, slow, fast):
                 on = False           # only fish passing through
-            self._handle(f"spot:{spot_id}", "spot", spot_id, tr, tr.update(on, ts, value, frame),
-                         self.zcfg.pre_roll, self.zcfg.post_roll)
+            box = union_box(scores.boxes, self._areas.get(spot_id)) if on else None
+            change = tr.update(on, ts, value, frame, box)
+            if self.kinds.get("spot", True):
+                self._handle(f"spot:{spot_id}", "spot", spot_id, tr, change, self.zcfg.pre_roll, self.zcfg.post_roll)
 
         base = self.baseline.update(ts, scores.tank) if not quiet else self.baseline.value
         busy = scores.tank > max(base * tank.burst_ratio, base + self.bcfg.floor) and not quiet
@@ -158,7 +218,10 @@ class EventManager:
         if tank.setting("feeding_detection"):
             feeding_on = (busy and scores.top_share >= self.fcfg.top_share
                           and (self.feeding.active or ts - self.last_feeding > self.fcfg.cooldown_minutes * 60))
-            change = self.feeding.update(feeding_on, ts, scores.tank, frame)
+            change = self.feeding.update(feeding_on, ts, scores.tank, frame,
+                                         busiest_box(scores.boxes, top_only=True) if feeding_on else None)
+            if not self.kinds.get("feeding", True):
+                change = None
             if change == "start":
                 self.last_feeding = ts
                 self._start_feeding(ts)
@@ -168,8 +231,11 @@ class EventManager:
         if self.bcfg.enabled:
             # While feeding, the burst it causes is part of the feeding event.
             on = busy and not self.feeding.active
-            self._handle("burst", "burst", None, self.burst, self.burst.update(on, ts, scores.tank, frame),
-                         self.bcfg.pre_roll, self.bcfg.post_roll)
+            change = self.burst.update(on, ts, scores.tank, frame, busiest_box(scores.boxes) if on else None)
+            if self.kinds.get("burst", False) or "burst" in self.open_ids:
+                self._handle("burst", "burst", None, self.burst, change, self.bcfg.pre_roll, self.bcfg.post_roll)
+            elif change == "end":
+                self.burst.reset()
 
         # Chases and darts: at night, a quiet tank (fish asleep) and one thing suddenly tearing across it.
         if self.ccfg.enabled:
@@ -179,7 +245,15 @@ class EventManager:
             found = self.chases.update(scores.blobs, ts, base, quiet_ok=calm)
             if found:
                 kind, track, speed = found
-                self._start_chase(kind, ts, frame)
+                px, py = track.pos
+                xs = [p[1] for p in track.pts] + [px]
+                ys = [p[2] for p in track.pts] + [py]
+                box = [max(0.0, min(xs) - 0.05), max(0.0, min(ys) - 0.05), 0, 0]
+                box[2] = min(1.0, max(xs) + 0.05) - box[0]
+                box[3] = min(1.0, max(ys) + 0.05) - box[1]
+                if self.kinds.get(kind, kind == "chase") or "chase" in self.open_ids:
+                    self._start_chase(kind, ts, frame, [round(v, 4) for v in box],
+                                      track.pts[0][0] if track.pts else ts)
             if "chase" in self.open_ids and ts >= self.chase_open_until:
                 self._close_chase(ts)
 
@@ -210,21 +284,25 @@ class EventManager:
         ne = datetime.strptime(self.night_window[1], "%H:%M").time()
         return (t >= ns or t < ne) if ns > ne else (ns <= t < ne)
 
-    def _start_chase(self, detail: str, ts: float, frame: np.ndarray) -> None:
+    def _start_chase(self, detail: str, ts: float, frame: np.ndarray, box: list[float] | None = None,
+                     began: float | None = None) -> None:
         c = self.ccfg
         if "chase" in self.open_ids:
             # Another dart while the clip is still open: extend it, and a chase outranks a dart.
-            self.chase_open_until = ts + c.post_roll
+            self.chase_open_until = ts + c.post_roll + EXTRA_ROLL
+            self.db.execute("UPDATE events SET action_end_ts=? WHERE id=?", (ts, self.open_ids["chase"]))
             if detail == "chase":
                 self.db.execute("UPDATE events SET detail='chase' WHERE id=?", (self.open_ids["chase"],))
             return
-        ev_id = self.db.open_event(self.tank.id, "chase", None, ts - c.pre_roll)
-        self.db.execute("UPDATE events SET detail=?, peak=?, peak_ts=? WHERE id=?", (detail, 1.0, ts, ev_id))
+        began = began or ts
+        ev_id = self.db.open_event(self.tank.id, "chase", None, began - c.pre_roll - EXTRA_ROLL)
+        self.db.execute("UPDATE events SET detail=?, peak=?, peak_ts=?, box=?, trigger_ts=?, action_end_ts=? WHERE id=?",
+                        (detail, 1.0, ts, json.dumps(box) if box else None, began, ts, ev_id))
         thumb = str(self.thumbs_dir / f"{ev_id}.jpg")
         cv2.imwrite(thumb, _thumb(frame), [cv2.IMWRITE_JPEG_QUALITY, 80])
         self.db.execute("UPDATE events SET thumb=? WHERE id=?", (thumb, ev_id))
         self.open_ids["chase"] = ev_id
-        self.chase_open_until = ts + c.post_roll
+        self.chase_open_until = ts + c.post_roll + EXTRA_ROLL
         log.info("%s spotted", detail)
         self._notify_start("chase", None, ts)
 
@@ -244,7 +322,9 @@ class EventManager:
             self.db.execute("UPDATE events SET kind='feeding' WHERE id=?", (ev_id,))
             self.burst.reset()
         else:
-            ev_id = self.db.open_event(tank_id, "feeding", None, self.feeding.candidate_since - self.fcfg.pre_roll)
+            ev_id = self.db.open_event(tank_id, "feeding", None,
+                                       self.feeding.candidate_since - self.fcfg.pre_roll - EXTRA_ROLL)
+        self.db.execute("UPDATE events SET trigger_ts=? WHERE id=?", (self.feeding.candidate_since, ev_id))
         self.open_ids["feeding"] = ev_id
         # A "Fed them" tap close by means it's already logged.
         near = self.db.one("SELECT id FROM feedings WHERE tank_id=? AND ts BETWEEN ? AND ?",
@@ -260,7 +340,8 @@ class EventManager:
     def _handle(self, key: str, kind: str, spot_id: int | None, tr: Hysteresis, change: str | None,
                 pre: float, post: float) -> None:
         if change == "start":
-            self.open_ids[key] = self.db.open_event(self.tank.id, kind, spot_id, tr.candidate_since - pre)
+            self.open_ids[key] = self.db.open_event(self.tank.id, kind, spot_id, tr.candidate_since - pre - EXTRA_ROLL)
+            self.db.execute("UPDATE events SET trigger_ts=? WHERE id=?", (tr.candidate_since, self.open_ids[key]))
             log.info("event start: %s", key)
             self._notify_start(kind, spot_id, tr.candidate_since)
         elif change == "end":
@@ -280,7 +361,9 @@ class EventManager:
             if tr.peak_frame is not None:
                 thumb = str(self.thumbs_dir / f"{ev_id}.jpg")
                 cv2.imwrite(thumb, tr.peak_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            self.db.close_event(ev_id, tr.last_true + post, tr.peak, tr.peak_ts, thumb)
+            self.db.close_event(ev_id, tr.last_true + post + EXTRA_ROLL, tr.peak, tr.peak_ts, thumb)
+            self.db.execute("UPDATE events SET box=?, action_end_ts=? WHERE id=?",
+                            (json.dumps(tr.peak_box) if tr.peak_box else None, tr.last_true, ev_id))
             log.info("event end: %s (peak %.3f)", key, tr.peak)
             for fn in self.closed_listeners:
                 fn(ev_id)

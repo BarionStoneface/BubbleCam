@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import json
 import logging
 import threading
 import time
@@ -116,6 +117,7 @@ class App:
         self.events = EventManager(cfg.zone_events, cfg.burst_events, cfg.feeding, self.db, self.data / "thumbs",
                                    cfg.chase)
         self.events.night_window = (cfg.timelapse.night_start, cfg.timelapse.night_end)
+        self.events.kinds = self.moment_kinds()
         self.recorder = (Recorder(cfg.record, self.data / "rec", cam.width, cam.height, cam.fps, self.db)
                          if cfg.record.enabled else None)
         self.storage = Storage(cfg.storage, self.db, self.data,
@@ -365,6 +367,24 @@ class App:
             self.free.stop()
         if self.recorder:
             self.recorder.stop()
+
+    # Which kinds of moment are kept (Setup)
+
+    def moment_kinds(self) -> dict:
+        from .events import DEFAULT_KINDS
+        kinds = dict(DEFAULT_KINDS)
+        try:
+            kinds.update({k: bool(v) for k, v in json.loads(self.db.get("moment_kinds", "{}")).items() if k in kinds})
+        except ValueError:
+            pass
+        return kinds
+
+    def set_moment_kinds(self, changes: dict) -> dict:
+        kinds = self.moment_kinds()
+        kinds.update({k: bool(v) for k, v in changes.items() if k in kinds})
+        self.db.set("moment_kinds", json.dumps(kinds))
+        self.events.kinds = kinds
+        return kinds
 
     # Modes
 

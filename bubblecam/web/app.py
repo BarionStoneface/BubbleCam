@@ -84,6 +84,7 @@ class TimelapseIn(BaseModel):
     ease_seconds: float | None = None
     driver: str | None = None
     overlay: bool = True
+    max_seconds: float | None = None
 
 
 def create_app(core: App) -> FastAPI:
@@ -485,6 +486,10 @@ def create_app(core: App) -> FastAPI:
         for r in rows:
             r["has_thumb"] = bool(r.pop("thumb"))
             r["has_clip"] = bool(r.pop("clip"))
+            try:
+                r["box"] = json.loads(r["box"]) if r.get("box") else None
+            except ValueError:
+                r["box"] = None
             r["tags"] = sorted(tags.get(r["id"], []))
         return rows
 
@@ -493,6 +498,17 @@ def create_app(core: App) -> FastAPI:
                 tag: str | None = None, starred: bool = False, wrong: bool = False, night_only: bool = False,
                 before: float | None = None, limit: int = 40):
         where, args = ["e.wrong = ?"], [1 if wrong else 0]
+        if not kind:
+            # Kinds switched off in Setup are hidden (kept, not deleted: switch them back on to see them).
+            k = core.moment_kinds()
+            off = [x for x in ("spot", "feeding", "burst") if not k[x]]
+            if off:
+                where.append(f"e.kind NOT IN ({','.join('?' * len(off))})")
+                args += off
+            if not k["chase"]:
+                where.append("NOT (e.kind = 'chase' AND COALESCE(e.detail, 'chase') = 'chase')")
+            if not k["dart"]:
+                where.append("NOT (e.kind = 'chase' AND e.detail = 'dart')")
         if tank_id is not None:
             where.append("e.tank_id = ?")
             args.append(tank_id)
@@ -604,7 +620,7 @@ def create_app(core: App) -> FastAPI:
             raise HTTPException(400, "the end has to be after the start")
         tank = core.tanks.get(req.tank_id) if req.tank_id is not None else None
         p = core.timelapses.default_params()
-        for f in ("max_speed", "min_speed", "ease_seconds", "driver"):
+        for f in ("max_speed", "min_speed", "ease_seconds", "driver", "max_seconds"):
             value = getattr(req, f)
             if value is not None:
                 setattr(p, f, value)
@@ -701,6 +717,14 @@ def create_app(core: App) -> FastAPI:
             "dropped_frames": core.recorder.dropped if core.recorder else 0,
             "perf": perf(),
         }
+
+    @api.get("/api/moment-kinds")
+    def get_moment_kinds():
+        return core.moment_kinds()
+
+    @api.put("/api/moment-kinds")
+    def put_moment_kinds(body: dict):
+        return core.set_moment_kinds(body)
 
     # Remembered box sizes: "Cheeks' home is about this big", so after moving the camera a box can be
     # dropped with one tap and nudged into place. Keyed by what the box is for and the animal's name.

@@ -587,7 +587,12 @@ function playUrl(src, title, info = '') {
   currentMoment = null;
   if (!playerZoom) {
     const v = $('#pvideo'), wrap = $('#pzoom');
-    playerZoom = zoomable(wrap, v);
+    playerZoom = zoomable(wrap, $('.pinner', wrap), { layout: true });
+    wrap.addEventListener('zoom', placeHighlight);
+    v.addEventListener('loadedmetadata', placeHighlight);
+    addEventListener('resize', placeHighlight);
+    v.addEventListener('timeupdate', momentTick);
+    v.addEventListener('ended', () => { v.playbackRate = 1; });
     // Zoomed in, the browser's own controls would be blown up and cut off: hide them, and a tap
     // plays or pauses instead.
     wrap.addEventListener('zoom', e => { v.controls = e.detail === 1; });
@@ -605,6 +610,9 @@ function playUrl(src, title, info = '') {
     }
   }
   playerZoom.reset();
+  $('#popts').hidden = true;
+  $('#pzoom .hl').hidden = true;
+  $('#pvideo').playbackRate = 1;
   $('#pvideo').src = src;
   $('#ptitle').textContent = title;
   $('#pinfo').textContent = info;
@@ -619,6 +627,10 @@ function openMoment(ev, onChange) {
   const src = `/api/moments/${ev.id}/clip.mp4`;
   playUrl(src, momentLabel(ev), `${ev.tank_name ? ev.tank_name + ' · ' : ''}${dayTime(ev.start_ts)}${ev.end_ts ? ' · ' + dur(ev.end_ts - ev.start_ts) : ''}`);
   currentMoment = { ev, onChange };
+  $('#popts').hidden = !ev.trigger_ts && !ev.box;
+  $('#phl').hidden = !ev.box;
+  drawPlayerOpts();
+  placeHighlight();
   $('#pdownload').dataset.src = src;
   const star = $('#pstar'), wrong = $('#pwrong'), del = $('#pdelete');
   [star, wrong, del].forEach(b => { b.hidden = false; });
@@ -707,7 +719,7 @@ $('#player').addEventListener('close', () => { $('#pvideo').pause(); $('#pvideo'
 
 async function pageMoments() {
   setTitle('Moments');
-  const [tanks, tags] = await Promise.all([api('/api/tanks'), api('/api/tags')]);
+  const [tanks, tags, kinds] = await Promise.all([api('/api/tanks'), api('/api/tags'), api('/api/moment-kinds')]);
   let filter = { key: 'all' };
   let tankId = '';
   let oldest = null;
@@ -716,8 +728,10 @@ async function pageMoments() {
     const dup = tanks.some(o => o.id !== t.id && o.spotlights.some(x => x.name === s.name));
     filters.push({ key: 'spot' + s.id, label: dup ? `${s.name} (${t.name})` : s.name, q: { spot_id: s.id } });
   }
-  filters.push({ key: 'feeding', label: 'Feeding', q: { kind: 'feeding' } }, { key: 'chase', label: 'Chases', q: { kind: 'chase' } },
-    { key: 'burst', label: 'Bursts', q: { kind: 'burst' } },
+  if (kinds.feeding) filters.push({ key: 'feeding', label: 'Feeding', q: { kind: 'feeding' } });
+  if (kinds.chase || kinds.dart) filters.push({ key: 'chase', label: 'Chases', q: { kind: 'chase' } });
+  if (kinds.burst) filters.push({ key: 'burst', label: 'Bursts', q: { kind: 'burst' } });
+  filters.push(
     { key: 'night', label: 'At night', q: { night_only: true } }, { key: 'starred', label: '★ Kept', q: { starred: true } });
   for (const t of tags) filters.push({ key: 'tag:' + t.tag, label: '#' + t.tag, q: { tag: t.tag } });
   filters.push({ key: 'wrong', label: 'Marked wrong', q: { wrong: true } });
@@ -754,7 +768,7 @@ async function pageMoments() {
   }
   function momentCard(ev) {
     const card = el(`<div class="card moment${ev.wrong ? ' wrong' : ''}" role="button" tabindex="0">
-      ${ev.has_thumb ? `<img loading="lazy" src="/api/moments/${ev.id}/thumb.jpg" alt="">` : '<div class="noimg"></div>'}
+      <div class="thumbwrap">${ev.has_thumb ? `<img loading="lazy" src="/api/moments/${ev.id}/thumb.jpg" alt="">` : '<div class="noimg"></div>'}${ev.box && showWhere() ? `<i class="hl" style="left:${ev.box[0] * 100}%;top:${ev.box[1] * 100}%;width:${ev.box[2] * 100}%;height:${ev.box[3] * 100}%"></i>` : ''}</div>
       <div class="meta"><div class="row"><span class="tag ${ev.kind}">${esc(momentLabel(ev))}</span><span class="grow"></span>
         <span class="star${ev.starred ? ' on' : ''}">★</span></div>
         <div class="dim">${tanks.length > 1 ? esc(ev.tank_name || '') + ' · ' : ''}${dayTime(ev.start_ts)}${ev.end_ts ? ' · ' + dur(ev.end_ts - ev.start_ts) : ' · happening now'}</div>
@@ -784,6 +798,7 @@ async function pageTimelapses() {
       <label class="field">When something moves: <b id="minv"></b><input type="range" id="mins" min="1" max="30" step="1"></label>
       <label class="field">How gently it slows down and speeds up: <b id="easev"></b><input type="range" id="ease" min="0" max="120" step="5"></label>
       <label class="field">Slow down for<select id="driver"></select></label>
+      <label class="field">Longest it can run<select id="tmax"><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="1200" selected>20 minutes</option><option value="0">No limit</option></select></label>
       <div class="row"><button class="btn primary" id="go">Make it</button><span class="dim" id="msg"></span></div>
     </div></div>`);
   const list = el('<div style="display:grid;gap:var(--gap)"></div>');
@@ -835,7 +850,7 @@ async function pageTimelapses() {
       tank_id: t ? t.id : null,
       start_ts: new Date($('#tstart', maker).value).getTime() / 1000, end_ts: new Date($('#tend', maker).value).getTime() / 1000,
       max_speed: maxFrom($('#maxs', maker).value), min_speed: +$('#mins', maker).value, ease_seconds: +$('#ease', maker).value,
-      driver: $('#driver', maker).value,
+      driver: $('#driver', maker).value, max_seconds: +$('#tmax', maker).value,
     });
     $('#msg', maker).textContent = 'On its way. It appears below when ready.';
     load();
@@ -1049,6 +1064,21 @@ async function pageSetup() {
   }
 
   const n = notify;
+  const kinds = await api('/api/moment-kinds');
+  const KIND_WORDS = [
+    ['spot', 'An animal you watch is moving', 'Cheeks out and about, the shrimp fanning: whoever is in "Who to watch".'],
+    ['feeding', 'Feeding', 'The tank rushes to the surface, or you tapped "Fed them".'],
+    ['chase', 'Chases at night', 'One fish going fast with another right behind it, while the tank sleeps.'],
+    ['dart', 'Darts at night', 'One fish shooting across the quiet tank on its own. Usually a startle.'],
+    ['burst', 'Bursts', 'The whole tank suddenly about three times busier than the last ten minutes. In a busy tank, mostly noise.'],
+  ];
+  const kindCard = el(`<div class="card"><h3>Moments to keep</h3>
+    <p class="dim" style="margin:6px 0 4px">Turned off kinds aren't made any more, and old ones are hidden (not deleted).</p>
+    ${KIND_WORDS.map(([k, t, d]) => `<label class="toggle"><span><b>${t}</b><br><span class="dim">${d}</span></span><input type="checkbox" data-kind="${k}" ${kinds[k] ? 'checked' : ''}></label>`).join('')}
+  </div>`);
+  kindCard.onchange = e => { const k = e.target.dataset.kind; if (k) attempt(() => send('/api/moment-kinds', 'PUT', { [k]: e.target.checked })); };
+  view.append(kindCard);
+
   const notifyCard = el(`<div class="card"><h3>Phone notifications</h3>
     <p class="dim" style="margin:6px 0 10px">Install the free <b>ntfy</b> app, tap +, and subscribe to this topic:</p>
     <div class="row"><code class="num grow" style="word-break:break-all">${esc(n.topic)}</code><button class="btn small" id="copy">Copy</button></div>
@@ -1581,8 +1611,8 @@ async function pageDash() {
 // box is the frame that stays put; target is what gets magnified (it fills box at 1x).
 // oneFingerPan: when zoomed, one finger drags the picture around (off on the drawing screen, where
 // one finger draws; there two fingers move it).
-function zoomable(box, target, { oneFingerPan = true, onGesture = null } = {}) {
-  let s = 1, tx = 0, ty = 0;
+function zoomable(box, target, { oneFingerPan = true, onGesture = null, layout = false } = {}) {
+  let s = 1, tx = 0, ty = 0, baseW = 0, baseH = 0;
   const pts = new Map();
   let pinch = null, pan = null, lastTap = 0;
   box.classList.add('zoombox');
@@ -1590,7 +1620,8 @@ function zoomable(box, target, { oneFingerPan = true, onGesture = null } = {}) {
   const bar = el(`<div class="zoombar"><button type="button" data-z="in" aria-label="Zoom in">＋</button><button type="button" data-z="out" aria-label="Zoom out">−</button><button type="button" data-z="reset" aria-label="Back to whole picture" hidden>1×</button></div>`);
   box.append(bar);
   function clamp() {
-    const W = box.clientWidth, H = target.offsetHeight || box.clientHeight;
+    if (!baseW || (s === 1 && !box.classList.contains('zoomed'))) { baseW = box.clientWidth; baseH = target.offsetHeight || box.clientHeight; }
+    const W = baseW, H = baseH;
     s = Math.min(8, Math.max(1, s));
     if (s === 1) { tx = 0; ty = 0; return; }
     tx = Math.min(0, Math.max(W - W * s, tx));
@@ -1598,7 +1629,14 @@ function zoomable(box, target, { oneFingerPan = true, onGesture = null } = {}) {
   }
   function apply() {
     clamp();
-    target.style.transform = s === 1 ? '' : `translate(${tx}px, ${ty}px) scale(${s})`;
+    if (layout) {
+      // Video: resize and move it instead of scaling the picture, which some phones show as black.
+      if (s === 1) { ['position', 'left', 'top', 'width', 'height'].forEach(k => { target.style[k] = ''; }); box.style.height = ''; baseW = 0; }
+      else { box.style.height = baseH + 'px'; Object.assign(target.style, { position: 'absolute', left: tx + 'px', top: ty + 'px', width: baseW * s + 'px', height: baseH * s + 'px' }); }
+    } else {
+      target.style.transform = s === 1 ? '' : `translate(${tx}px, ${ty}px) scale(${s})`;
+      if (s === 1) baseW = 0;
+    }
     box.classList.toggle('zoomed', s > 1);
     $('[data-z=reset]', bar).hidden = s === 1;
     $('[data-z=reset]', bar).textContent = `${s.toFixed(s < 2 ? 1 : 0)}× ⟲`;
@@ -1743,5 +1781,50 @@ function versionLine(st) {
 }
 try { if (localStorage.getItem('bc-needs-installer')) { localStorage.removeItem('bc-needs-installer');
   setTimeout(() => openSheet('<h3>Updated</h3><p>This update also changed the Pi set up. When you\'re next at the Pi, run <code>./deploy/install.sh</code> from the BubbleCam folder once.</p>'), 800); } } catch (e) {}
+
+
+// ---------- Moments: where it happened, and slow motion at the moment itself
+
+const pref = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } };
+const setPref = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+const showWhere = () => pref('bc-where', '1') === '1';
+const slowRate = () => +pref('bc-slow', '1');
+
+function drawPlayerOpts() {
+  $('#phl').classList.toggle('on', showWhere());
+  $$('#popts [data-slow]').forEach(b => b.classList.toggle('on', +b.dataset.slow === slowRate()));
+}
+$('#phl').onclick = () => { setPref('bc-where', showWhere() ? '0' : '1'); drawPlayerOpts(); placeHighlight(); };
+$('#popts').addEventListener('click', e => {
+  const r = e.target.dataset.slow;
+  if (!r) return;
+  setPref('bc-slow', r); drawPlayerOpts(); momentTick();
+});
+
+// The moment's parts, in seconds into its clip: the action starts at `at`, ends at `until`.
+function momentTimes(ev) {
+  if (!ev || !ev.trigger_ts) return null;
+  const at = Math.max(0, ev.trigger_ts - ev.start_ts);
+  const end = ev.action_end_ts || (ev.trigger_ts + 4);
+  return { at, until: Math.min(end - ev.start_ts, at + 15) + 0.5 };
+}
+function momentTick() {
+  const v = $('#pvideo'), ev = currentMoment && currentMoment.ev, m = momentTimes(ev);
+  if (!m) { if (v.playbackRate !== 1) v.playbackRate = 1; return; }
+  const t = v.currentTime, during = t >= m.at - 0.3 && t <= m.until;
+  const rate = during ? slowRate() : 1;
+  if (Math.abs(v.playbackRate - rate) > 0.01) v.playbackRate = rate;
+  $('#pzoom .hl').classList.toggle('now', during);
+}
+function placeHighlight() {
+  const v = $('#pvideo'), hl = $('#pzoom .hl'), inner = $('#pzoom .pinner');
+  const ev = currentMoment && currentMoment.ev, b = ev && ev.box;
+  if (!b || !showWhere() || !v.videoWidth) { hl.hidden = true; return; }
+  const cw = inner.clientWidth, ch = inner.clientHeight;
+  const k = Math.min(cw / v.videoWidth, ch / v.videoHeight);
+  const w = v.videoWidth * k, h = v.videoHeight * k, ox = (cw - w) / 2, oy = (ch - h) / 2;
+  Object.assign(hl.style, { left: ox + b[0] * w + 'px', top: oy + b[1] * h + 'px', width: b[2] * w + 'px', height: b[3] * h + 'px' });
+  hl.hidden = false;
+}
 
 pollStatus().then(route);

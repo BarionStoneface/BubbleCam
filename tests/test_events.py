@@ -37,3 +37,12 @@ def test_long_stretch_is_split():
     changes = run(tr, [1] * 1500, fps=1)
     starts = [t for c, t in changes if c == "start"]
     assert len(starts) == 3
+
+
+def test_busiest_box_finds_the_crowd_not_the_whole_tank():
+    from bubblecam.events import busiest_box, union_box
+    scattered = [(0.05, 0.6, 0.03, 0.02), (0.9, 0.7, 0.03, 0.02), (0.5, 0.85, 0.03, 0.02)]
+    crowd = [(0.30 + i * 0.02, 0.05 + (i % 3) * 0.02, 0.04, 0.03) for i in range(8)]
+    b = busiest_box(scattered + crowd, top_only=True)
+    assert b[0] > 0.2 and b[0] + b[2] < 0.6 and b[1] + b[3] < 0.3          # around the surface crowd
+    assert union_box(scattered + crowd)[2] > 0.8                            # the old way: the whole tank

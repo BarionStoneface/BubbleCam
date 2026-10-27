@@ -167,7 +167,10 @@ class DB:
             self._conn.execute(f"PRAGMA user_version={VERSION}")
             # Columns added later; a database from before gets them without being set aside.
             for table, column, decl in (("segments", "kept", "INTEGER DEFAULT 0"),
-                                        ("timelapses", "out_path", "TEXT")):
+                                        ("timelapses", "out_path", "TEXT"),
+                                        ("events", "box", "TEXT"),           # where it happened: [x, y, w, h]
+                                        ("events", "trigger_ts", "REAL"),    # when the action itself began
+                                        ("events", "action_end_ts", "REAL")):
                 have = [r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")]
                 if column not in have:
                     self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")

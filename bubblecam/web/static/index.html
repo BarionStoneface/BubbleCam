@@ -48,7 +48,13 @@
 </nav>
 
 <dialog id="player">
-  <div id="pzoom"><video id="pvideo" controls playsinline></video></div>
+  <div id="pzoom"><div class="pinner"><video id="pvideo" controls playsinline></video><div class="hl" hidden></div></div></div>
+  <div class="row popts" id="popts" hidden>
+    <button class="chip" type="button" id="phl">▢ Show where</button>
+    <span class="grow"></span>
+    <span class="dim">Slow motion at the moment</span>
+    <button class="chip" type="button" data-slow="1">Off</button><button class="chip" type="button" data-slow="0.6">0.6×</button><button class="chip" type="button" data-slow="0.4">0.4×</button>
+  </div>
   <div style="display:grid;gap:12px;margin-top:12px">
     <div class="row"><div class="grow"><b id="ptitle"></b><div class="dim" id="pinfo"></div></div>
       <button class="star" id="pstar" title="Keep forever">★</button></div>

@@ -40,7 +40,7 @@ class TimelapseParams:
     driver: str = "spots"         # "spots" (all spotlighted animals), "spot:<slot>", "tank" or "both"
     output_fps: int = 30
     overlay: bool = True
-    max_seconds: float = 240.0    # longest the finished timelapse may run; 0 = no limit
+    max_seconds: float = 1200.0   # longest the finished timelapse may run (20 minutes); 0 = no limit
 
 
 def interest(spot: np.ndarray, tank: np.ndarray, driver: str, spot_ref: float, tank_ref: float) -> np.ndarray:
