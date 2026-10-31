@@ -225,7 +225,7 @@ class Recorder:
                 if self.segment:
                     self._close_and_check(self.segment)
                 self.segment = _Segment(self.rec_dir, ts, self.width, self.height, self.fps,
-                                        self.encoder, self.cfg.bitrate, self.db, self.flat, self.kept,
+                                        self.encoder, self.bitrate(), self.db, self.flat, self.kept,
                                         self.movflags)
             try:
                 self.segment.write(frame, ts, tank, spots, view)
@@ -256,6 +256,14 @@ class Recorder:
         if self.encoder != "libx264" or self.movflags != FRAG:
             log.warning("switching recording to libx264")
             self.encoder, self.movflags = "libx264", FRAG
+
+    def bitrate(self) -> str:
+        """The recording quality chosen in Setup, else the one in config.yaml."""
+        try:
+            v = self.db.get("record_bitrate")
+        except Exception:
+            v = None
+        return v or self.cfg.bitrate
 
     def cut(self) -> None:
         """Finish the current segment now (recording is pausing)."""

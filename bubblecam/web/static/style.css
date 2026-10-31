@@ -294,7 +294,21 @@ body.immersive .top, body.immersive .tabs, body.immersive .kiosk-menu { display:
 #player.fs { width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; border-radius: 0; background: #000; }
 #player.fs > :not(#pzoom) { display: none; }
 #player.fs #pzoom { height: 100dvh; border-radius: 0; }
+#player.fs #pzoom .pinner { width: 100%; height: 100%; }
 #player.fs video { width: 100%; height: 100%; max-height: none; border-radius: 0; object-fit: contain; }
+#player:fullscreen { width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: #000; }
+
+/* The player's own controls, over the bottom of the picture */
+.pbar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 4; display: flex; align-items: center; gap: 8px;
+  padding: 26px 10px 8px; background: linear-gradient(transparent, rgba(0,0,0,.7)); color: #fff; }
+.pbar button { background: none; border: 0; color: #fff; min-width: 36px; min-height: 36px; font-size: 16px; cursor: pointer; border-radius: 8px; }
+.pbar .pspeeds { display: flex; gap: 2px; }
+.pbar .pspeeds button { min-width: 32px; font-size: 13px; opacity: .75; }
+.pbar .pspeeds button.on { opacity: 1; background: rgba(255,255,255,.18); }
+.pbar .ptime { font-size: 12px; white-space: nowrap; }
+.pbar .pseek { min-width: 60px; accent-color: var(--accent); }
+#pzoom .zoombar { bottom: 62px; }
+@media (max-width: 520px) { .pbar .pspeeds button[data-rate="0.25"], .pbar .pspeeds button[data-rate="4"] { display: none; } }
 
 /* Where it happened, and the player's options */
 #pzoom .pinner { position: relative; }

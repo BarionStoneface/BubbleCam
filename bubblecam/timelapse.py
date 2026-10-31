@@ -249,7 +249,10 @@ def render(db: DB, cfg: Config, tl_id: int, tanks=None) -> None:
     proc = subprocess.Popen(
         ["nice", "-n", "15", "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
          "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{w}x{h}", "-framerate", str(p.output_fps), "-i", "-",
-         *encoder_args(enc, "4M", p.output_fps * 2), "-movflags", "+faststart", str(out)],
+         # By quality, not size: night footage is noisy and a fixed bitrate turns it to mush. This
+         # runs in the background, so a slower, better setting is affordable.
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", str(p.output_fps * 2),
+         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)],
         stdin=subprocess.PIPE)
 
     readers: dict[tuple[int, str], FrameReader] = {}

@@ -48,7 +48,15 @@
 </nav>
 
 <dialog id="player">
-  <div id="pzoom"><div class="pinner"><video id="pvideo" controls playsinline></video><div class="hl" hidden></div></div></div>
+  <div id="pzoom"><div class="pinner"><video id="pvideo" playsinline></video><div class="hl" hidden></div></div>
+    <div class="pbar" id="pbar">
+      <button type="button" class="pplay" aria-label="Play">▶</button>
+      <span class="ptime num">0:00</span>
+      <input type="range" class="pseek grow" min="0" max="1000" value="0" aria-label="Position">
+      <span class="pspeeds"><button type="button" data-rate="0.25">¼×</button><button type="button" data-rate="0.5">½×</button><button type="button" data-rate="1" class="on">1×</button><button type="button" data-rate="2">2×</button><button type="button" data-rate="4">4×</button></span>
+      <button type="button" class="pfs" aria-label="Full screen">⛶</button>
+    </div>
+  </div>
   <div class="row popts" id="popts" hidden>
     <button class="chip" type="button" id="phl">▢ Show where</button>
     <span class="grow"></span>

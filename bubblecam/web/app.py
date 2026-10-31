@@ -290,6 +290,14 @@ def create_app(core: App) -> FastAPI:
                                              "bubbles": body.bubbles.model_dump() if body.bubbles else None})
         return core.layout()
 
+    @api.post("/api/tanks/{tank_id}/learn-motion")
+    async def learn_motion(tank_id: int, seconds: float = 10):
+        tank_or_404(tank_id)
+        if tank_id != core.tank_id:
+            raise HTTPException(409, "the camera isn't looking at this tank right now")
+        from ..learn import watch
+        return {"patches": await run_in_threadpool(watch, core, min(30.0, max(3.0, seconds)))}
+
     @api.post("/api/tanks/{tank_id}/spotlights")
     def add_spotlight(tank_id: int, body: NameIn):
         tank_or_404(tank_id)
@@ -717,6 +725,26 @@ def create_app(core: App) -> FastAPI:
             "dropped_frames": core.recorder.dropped if core.recorder else 0,
             "perf": perf(),
         }
+
+    QUALITY = {"standard": "1500k", "high": "3000k", "best": "5000k"}
+
+    @api.get("/api/record-quality")
+    def get_quality():
+        current = db.get("record_bitrate") or cfg.record.bitrate
+        level = next((k for k, v in QUALITY.items() if v == current), "custom")
+        disk = shutil.disk_usage(core.data)
+        # Bitrate in bits a second -> GB a day; the picture stream is nearly all of it.
+        per_day = {k: int(v.rstrip("k")) * 1000 / 8 * 86400 / 1e9 * 1.08 for k, v in QUALITY.items()}
+        return {"level": level, "bitrate": current, "gb_per_day": {k: round(v) for k, v in per_day.items()},
+                "disk_total_gb": round(disk.total / 1e9)}
+
+    @api.put("/api/record-quality")
+    def put_quality(body: dict):
+        level = body.get("level")
+        if level not in QUALITY:
+            raise HTTPException(400, "level is standard, high or best")
+        db.set("record_bitrate", QUALITY[level])
+        return get_quality()
 
     @api.get("/api/moment-kinds")
     def get_moment_kinds():

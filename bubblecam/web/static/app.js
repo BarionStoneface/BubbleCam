@@ -582,7 +582,7 @@ function dayBar(card, tank) {
 // Video player for moments and timelapses
 
 let currentMoment = null;
-let playerZoom = null;
+let playerZoom = null, playerSpeed = 1;
 function playUrl(src, title, info = '') {
   currentMoment = null;
   if (!playerZoom) {
@@ -593,22 +593,52 @@ function playUrl(src, title, info = '') {
     addEventListener('resize', placeHighlight);
     v.addEventListener('timeupdate', momentTick);
     v.addEventListener('ended', () => { v.playbackRate = 1; });
-    // Zoomed in, the browser's own controls would be blown up and cut off: hide them, and a tap
-    // plays or pauses instead.
-    wrap.addEventListener('zoom', e => { v.controls = e.detail === 1; });
+    // Our own controls, always: the browser's own ones get blown up and cut off when zoomed, and its
+    // full screen has no zoom or panning. A tap on the picture plays or pauses.
+    v.controls = false;
     wrap.addEventListener('click', e => {
-      if (e.target.closest('.zoombar') || v.controls) return;
+      if (e.target.closest('.zoombar, .pbar')) return;
       v.paused ? v.play().catch(() => {}) : v.pause();
     });
-    if (installed()) {
-      // Same idea for videos: our own full screen, without the browser's notice.
-      v.setAttribute('controlslist', 'nofullscreen');
-      const fsb = el('<button type="button" aria-label="Full screen">⛶</button>');
-      fsb.onclick = e => { e.stopPropagation(); $('#player').classList.toggle('fs'); playerZoom.reset(); };
-      $('.zoombar', wrap).append(fsb);
-      $('#player').addEventListener('close', () => $('#player').classList.remove('fs'));
-    }
+    const bar = $('#pbar'), seek = $('.pseek', bar), play = $('.pplay', bar), time = $('.ptime', bar);
+    bar.addEventListener('pointerdown', e => e.stopPropagation(), true);
+    const fmt = s => isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : '0:00';
+    const drawBar = () => {
+      play.textContent = v.paused ? '▶' : '❚❚';
+      time.textContent = `${fmt(v.currentTime)} / ${fmt(v.duration)}`;
+      if (!seek.dataset.dragging && v.duration) seek.value = Math.round(v.currentTime / v.duration * 1000);
+    };
+    ['timeupdate', 'play', 'pause', 'loadedmetadata', 'durationchange'].forEach(ev => v.addEventListener(ev, drawBar));
+    play.onclick = () => { v.paused ? v.play().catch(() => {}) : v.pause(); };
+    seek.oninput = () => { seek.dataset.dragging = '1'; if (v.duration) v.currentTime = seek.value / 1000 * v.duration; };
+    seek.onchange = () => { delete seek.dataset.dragging; };
+    $('.pspeeds', bar).onclick = e => {
+      const r = e.target.dataset.rate;
+      if (!r) return;
+      playerSpeed = +r;
+      $$('.pspeeds button', bar).forEach(b => b.classList.toggle('on', b === e.target));
+      momentTick();
+    };
+    $('.pfs', bar).onclick = () => {
+      const p = $('#player');
+      if (p.classList.contains('fs') || document.fullscreenElement) {
+        p.classList.remove('fs');
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      } else {
+        // Fill the screen ourselves (zoom and panning keep working). In a browser tab, also ask for
+        // real full screen so the browser's bars go.
+        p.classList.add('fs');
+        if (!installed() && p.requestFullscreen) p.requestFullscreen().then(() => {
+          try { screen.orientation.lock('landscape').catch(() => {}); } catch (e) {}
+        }).catch(() => {});
+      }
+      playerZoom.reset(); setTimeout(placeHighlight, 300);
+    };
+    document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) $('#player').classList.remove('fs'); setTimeout(placeHighlight, 300); });
+    $('#player').addEventListener('close', () => { $('#player').classList.remove('fs'); if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); v.pause(); });
   }
+  playerSpeed = 1;
+  $$('#pbar .pspeeds button').forEach(b => b.classList.toggle('on', b.dataset.rate === '1'));
   playerZoom.reset();
   $('#popts').hidden = true;
   $('#pzoom .hl').hidden = true;
@@ -1079,6 +1109,17 @@ async function pageSetup() {
   kindCard.onchange = e => { const k = e.target.dataset.kind; if (k) attempt(() => send('/api/moment-kinds', 'PUT', { [k]: e.target.checked })); };
   view.append(kindCard);
 
+  const q = await api('/api/record-quality');
+  const days = gb => Math.max(1, Math.floor(q.disk_total_gb * 0.9 / gb));
+  const QWORDS = [['standard', 'Standard', 'Fine by day; night footage looks smudgy'], ['high', 'High', 'Clear night footage'],
+    ['best', 'Best', 'Sharpest, fills the stick fastest']];
+  const qCard = el(`<div class="card"><h3>Recording quality</h3>
+    <p class="dim" style="margin:6px 0 10px">Infrared night footage is grainy, and grain needs more room to keep detail. Applies from the next ten minute part.</p>
+    <div style="display:grid;gap:8px">${QWORDS.map(([k, t, d]) => `<label class="list-row" style="padding:6px 0"><input type="radio" name="rq" value="${k}" ${q.level === k ? 'checked' : ''}>
+      <span class="grow"><b>${t}</b> <span class="dim">· ${d} · about ${q.gb_per_day[k]} GB a day, ${days(q.gb_per_day[k])} days of footage on this drive</span></span></label>`).join('')}</div></div>`);
+  qCard.onchange = e => { if (e.target.name === 'rq') attempt(async () => { await send('/api/record-quality', 'PUT', { level: e.target.value }); flash('Saved'); }); };
+  view.append(qCard);
+
   const notifyCard = el(`<div class="card"><h3>Phone notifications</h3>
     <p class="dim" style="margin:6px 0 10px">Install the free <b>ntfy</b> app, tap +, and subscribe to this topic:</p>
     <div class="row"><code class="num grow" style="word-break:break-all">${esc(n.topic)}</code><button class="btn small" id="copy">Copy</button></div>
@@ -1219,6 +1260,11 @@ async function pageDraw(arg) {
     <label class="field">What are you drawing?<select id="drawmode">${modes.map(m => `<option value="${m.key}">${esc(m.label)}</option>`).join('')}</select></label>
     <div class="drawbox"><div class="zoomin"><img alt="current picture"><canvas></canvas></div></div>
     <p class="dim" id="hint" style="margin:0"></p>
+    <div class="row" id="learnrow" hidden><span class="dim">Smart ignore: watch for movement for</span>
+      <button class="btn small" data-learn="5">5 s</button><button class="btn small" data-learn="10">10 s</button><button class="btn small" data-learn="20">20 s</button></div>
+    <div class="row" id="learnpick" hidden><span class="dim grow" id="learnmsg"></span>
+      <button class="btn small" id="learnall">All</button><button class="btn small" id="learnnone">None</button>
+      <button class="btn small" id="learncancel">Cancel</button><button class="btn small primary" id="learnadd">Add as ignore</button></div>
     <div class="row"><button class="btn small" id="rm" disabled>Remove selected box</button><button class="btn small" id="pic">New picture</button>
       <span class="grow"></span><button class="btn primary" id="save">Save</button></div></div>`);
   view.append(card);
@@ -1226,7 +1272,51 @@ async function pageDraw(arg) {
   img.src = `/api/snapshot.jpg?width=1280&t=${Date.now()}`;
   img.onload = render;
   $('#pic', card).onclick = () => { img.src = `/api/snapshot.jpg?width=1280&t=${Date.now()}`; };
-  $('#drawmode', card).onchange = e => { mode = modes.find(m => m.key === e.target.value); selected = -1; render(); };
+  $('#drawmode', card).onchange = e => { mode = modes.find(m => m.key === e.target.value); selected = -1; cands = null; render(); };
+
+  // Smart ignore: the Pi watches for a few seconds and offers every patch of movement. All are
+  // picked to start with; tap any to leave it out. A picked box that sits inside a bigger picked box
+  // is folded into it; leave the big one out and the small ones stay.
+  let cands = null;
+  const inside = (a, b) => a.x >= b.x - 0.003 && a.y >= b.y - 0.003 && a.x + a.w <= b.x + b.w + 0.003 && a.y + a.h <= b.y + b.h + 0.003;
+  function finalPick() {
+    const sel = cands.filter(c => c.on), existing = layout.settings.ignore;
+    return sel.filter((a, i) => !sel.some((b, j) => j !== i && inside(a, b) && !(inside(b, a) && j > i))
+                               && !existing.some(b => inside(a, b)));
+  }
+  function drawLearn() {
+    $('#learnrow', card).hidden = mode.key !== 'ignore' || !!cands;
+    $('#learnpick', card).hidden = !cands;
+    if (cands) {
+      const n = cands.filter(c => c.on).length, k = finalPick().length;
+      $('#learnmsg', card).textContent = cands.length
+        ? `Found ${cands.length} moving patch${cands.length === 1 ? '' : 'es'}; ${n} picked${k < n ? `, ${k} after folding small ones into bigger ones` : ''}. Tap a box to leave it out or bring it back.`
+        : 'Nothing moved while it watched.';
+      $('#learnadd', card).disabled = !k;
+    }
+  }
+  card.addEventListener('click', e => {
+    const secs = e.target.dataset.learn;
+    if (!secs) return;
+    attempt(async () => {
+      $$('[data-learn]', card).forEach(b => { b.disabled = true; });
+      $('#hint', card).textContent = `Watching for ${secs} seconds… keep hands out of the tank.`;
+      try {
+        const r = await send(`/api/tanks/${tankId}/learn-motion?seconds=${secs}`, 'POST');
+        cands = r.patches.map(p => ({ ...p, on: true }));
+      } finally { $$('[data-learn]', card).forEach(b => { b.disabled = false; }); }
+      render();
+    });
+  });
+  $('#learnall', card).onclick = () => { cands.forEach(c => { c.on = true; }); render(); };
+  $('#learnnone', card).onclick = () => { cands.forEach(c => { c.on = false; }); render(); };
+  $('#learncancel', card).onclick = () => { cands = null; render(); };
+  $('#learnadd', card).onclick = () => {
+    const add = finalPick();
+    layout.settings.ignore = [...layout.settings.ignore, ...add.map(({ x, y, w, h }) => ({ x, y, w, h }))];
+    cands = null; render();
+    flash(`Added ${add.length} ignore box${add.length === 1 ? '' : 'es'}. Press Save to keep them.`);
+  };
   let act = null;           // what the finger is doing: draw, move or resize
   zoomable(box, $('.zoomin', card), { oneFingerPan: false, onGesture: () => { act = null; render(); } });
   box.addEventListener('zoom', () => render());
@@ -1259,6 +1349,19 @@ async function pageDraw(arg) {
       });
     }
     g.globalAlpha = 1;
+    if (cands) {
+      const keep = new Set(finalPick());
+      for (const c of [...cands].sort((a, b) => b.w * b.h - a.w * a.h)) {
+        const x = c.x * r.width, y = c.y * r.height, w = c.w * r.width, h = c.h * r.height;
+        g.setLineDash(c.on ? [] : [4, 4]);
+        g.lineWidth = c.on ? 2.5 : 1.5;
+        g.strokeStyle = c.on ? css('--warm') : 'rgba(255,255,255,.55)';
+        g.fillStyle = keep.has(c) ? 'rgba(240,180,90,.22)' : 'rgba(0,0,0,0)';
+        g.fillRect(x, y, w, h); g.strokeRect(x, y, w, h);
+      }
+      g.setLineDash([]);
+    }
+    drawLearn();
     if (act && act.kind === 'draw' && act.w > 0) { g.strokeStyle = css(mode.color); g.setLineDash([5, 4]); g.lineWidth = 2;
       g.strokeRect(act.x * r.width, act.y * r.height, act.w * r.width, act.h * r.height); g.setLineDash([]); }
     $('#rm', card).disabled = selected < 0;
@@ -1274,6 +1377,13 @@ async function pageDraw(arg) {
 
   canvas.onpointerdown = e => {
     if (e.button > 0) return;
+    if (cands) {
+      const [px, py] = rel(e);
+      const hit = cands.filter(c => px >= c.x && px <= c.x + c.w && py >= c.y && py <= c.y + c.h)
+        .sort((a, b) => a.w * a.h - b.w * b.h)[0];
+      if (hit) { hit.on = !hit.on; render(); }
+      return;
+    }
     canvas.setPointerCapture(e.pointerId);
     const [x, y] = rel(e), r = canvas.getBoundingClientRect();
     const hx = 16 / r.width, hy = 16 / r.height;           // finger sized corner handles, in picture units
@@ -1810,9 +1920,9 @@ function momentTimes(ev) {
 }
 function momentTick() {
   const v = $('#pvideo'), ev = currentMoment && currentMoment.ev, m = momentTimes(ev);
-  if (!m) { if (v.playbackRate !== 1) v.playbackRate = 1; return; }
+  if (!m) { if (Math.abs(v.playbackRate - playerSpeed) > 0.01) v.playbackRate = playerSpeed; return; }
   const t = v.currentTime, during = t >= m.at - 0.3 && t <= m.until;
-  const rate = during ? slowRate() : 1;
+  const rate = playerSpeed * (during ? slowRate() : 1);
   if (Math.abs(v.playbackRate - rate) > 0.01) v.playbackRate = rate;
   $('#pzoom .hl').classList.toggle('now', during);
 }
